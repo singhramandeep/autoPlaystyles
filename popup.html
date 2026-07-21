@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>PlayStyle Evo Helper — FC26</title>
+  <style>
+    /* ── Reset & base ──────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #0d1117;
+      --bg2:      #161b22;
+      --bg3:      #1c2330;
+      --border:   #30363d;
+      --border2:  #3d444d;
+      --text:     #e6edf3;
+      --muted:    #7d8590;
+      --green:    #3fb950;
+      --green-glow: rgba(63, 185, 80, 0.25);
+      --amber:    #d29922;
+      --amber-glow: rgba(210, 153, 34, 0.2);
+      --red:      #f85149;
+      --red-glow: rgba(248, 81, 73, 0.2);
+      --blue:     #388bfd;
+      --gold:     #d4a62a;
+      --acc:      #1f6feb;
+      --font:     -apple-system, "Segoe UI", Arial, sans-serif;
+      --mono:     ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
+    }
+
+    body {
+      width: 340px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 13px;
+      line-height: 1.5;
+      overflow: hidden;
+    }
+
+    /* ── Header ────────────────────────────────────────────── */
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 14px 16px 12px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg2);
+    }
+    .logo {
+      width: 32px; height: 32px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, #1a2744 0%, #0d1117 100%);
+      border: 1px solid var(--border2);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px;
+      flex-shrink: 0;
+      box-shadow: 0 0 10px rgba(63,185,80,0.15);
+    }
+    .title-block { flex: 1; min-width: 0; }
+    .title {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: 0.01em;
+    }
+    .subtitle {
+      font-size: 10px;
+      color: var(--muted);
+      font-family: var(--mono);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .version-badge {
+      font: 700 10px var(--mono);
+      color: var(--muted);
+      border: 1px solid var(--border);
+      padding: 2px 6px;
+      border-radius: 4px;
+      white-space: nowrap;
+      letter-spacing: 0.04em;
+    }
+
+    /* ── Main body ──────────────────────────────────────────── */
+    .body { padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
+
+    /* ── Status card ────────────────────────────────────────── */
+    .status-card {
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      overflow: hidden;
+      transition: border-color 0.3s;
+    }
+    .status-card.active  { border-color: var(--green); box-shadow: 0 0 0 1px var(--green-glow); }
+    .status-card.pending { border-color: var(--amber); box-shadow: 0 0 0 1px var(--amber-glow); }
+    .status-card.inactive{ border-color: var(--border); }
+    .status-card.error   { border-color: var(--red);   box-shadow: 0 0 0 1px var(--red-glow); }
+
+    .status-top {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 14px;
+      background: var(--bg2);
+    }
+    .status-dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      background: var(--border2);
+      transition: background 0.3s, box-shadow 0.3s;
+    }
+    .active  .status-dot { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .pending .status-dot { background: var(--amber); box-shadow: 0 0 6px var(--amber); animation: pulse 1.4s ease-in-out infinite; }
+    .inactive .status-dot{ background: var(--border2); }
+    .error   .status-dot { background: var(--red);   box-shadow: 0 0 6px var(--red); }
+
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+    .status-label {
+      flex: 1;
+      font-weight: 700;
+      font-size: 13px;
+    }
+    .active  .status-label { color: var(--green); }
+    .pending .status-label { color: var(--amber); }
+    .inactive .status-label{ color: var(--muted); }
+    .error   .status-label { color: var(--red); }
+
+    .status-icon { font-size: 18px; line-height: 1; }
+
+    .status-body {
+      padding: 10px 14px;
+      border-top: 1px solid var(--border);
+      background: var(--bg3);
+      font-size: 11.5px;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    /* ── Info rows ──────────────────────────────────────────── */
+    .info-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .info-row {
+      display: flex;
+      align-items: center;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      gap: 10px;
+    }
+    .info-row:last-child { border-bottom: none; }
+    .info-key {
+      font: 10px var(--mono);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      width: 80px;
+      flex-shrink: 0;
+    }
+    .info-val {
+      font-size: 11.5px;
+      color: var(--text);
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .info-val.ok    { color: var(--green); font-weight: 600; }
+    .info-val.warn  { color: var(--amber); font-weight: 600; }
+    .info-val.err   { color: var(--red);   font-weight: 600; }
+
+    /* ── Buttons ────────────────────────────────────────────── */
+    .btn-row { display: flex; gap: 8px; }
+    .btn {
+      flex: 1;
+      padding: 9px 12px;
+      border-radius: 6px;
+      border: 1px solid var(--border2);
+      background: var(--bg2);
+      color: var(--text);
+      font: 600 11.5px var(--font);
+      cursor: pointer;
+      text-align: center;
+      transition: background .15s, border-color .15s, color .15s;
+      text-decoration: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+    .btn:hover { background: var(--bg3); border-color: var(--text); }
+    .btn.primary {
+      background: var(--acc);
+      border-color: var(--acc);
+      color: #fff;
+    }
+    .btn.primary:hover { filter: brightness(1.15); }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* ── Divider ────────────────────────────────────────────── */
+    .divider { height: 1px; background: var(--border); margin: 0 -16px; }
+
+    /* ── Tip box ────────────────────────────────────────────── */
+    .tip {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--acc);
+      border-radius: 0 6px 6px 0;
+      padding: 9px 11px;
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+    .tip b { color: var(--text); }
+
+    /* ── Footer ─────────────────────────────────────────────── */
+    .footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 16px;
+      border-top: 1px solid var(--border);
+      background: var(--bg2);
+    }
+    .footer-left { font-size: 10px; color: var(--muted); font-family: var(--mono); }
+    .footer a {
+      color: var(--blue);
+      text-decoration: none;
+      font-size: 11px;
+    }
+    .footer a:hover { text-decoration: underline; }
+
+    /* ── Export section ──────────────────────────────────────── */
+    .export-section {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .export-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 12px;
+      background: var(--bg2);
+      border-bottom: 1px solid var(--border);
+      font: 700 11px var(--mono);
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      color: var(--muted);
+    }
+    .export-header span { flex: 1; }
+    .export-btns {
+      display: flex;
+      gap: 0;
+    }
+    .export-btns .btn {
+      flex: 1;
+      border-radius: 0;
+      border: 0;
+      border-right: 1px solid var(--border);
+      font-size: 11px;
+      padding: 9px 8px;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .export-btns .btn:last-child { border-right: 0; }
+    .export-btns .btn small {
+      font: 9px var(--mono);
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .06em;
+    }
+    .export-btns .btn:hover small { color: var(--text); }
+    .export-status {
+      padding: 8px 12px;
+      font: 11px var(--mono);
+      color: var(--muted);
+      border-top: 1px solid var(--border);
+      background: var(--bg3);
+      min-height: 30px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .export-status.ok   { color: var(--green); }
+    .export-status.err  { color: var(--red);   }
+    .export-status.load { color: var(--amber); }
+
+    /* ── Spinner ─────────────────────────────────────────────── */
+    .spin { display: inline-block; animation: spin 0.8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <div class="logo">⚽</div>
+    <div class="title-block">
+      <div class="title">PlayStyle Evo Helper</div>
+      <div class="subtitle">FC 26 · Batch Evolution Tool</div>
+    </div>
+    <span class="version-badge" id="ext-version">v1.0.0</span>
+  </div>
+
+  <div class="body">
+
+    <!-- ── Live status card ── -->
+    <div class="status-card" id="status-card">
+      <div class="status-top">
+        <div class="status-dot"></div>
+        <div class="status-label" id="status-label">Checking…</div>
+        <div class="status-icon" id="status-icon"><span class="spin">◌</span></div>
+      </div>
+      <div class="status-body" id="status-body">
+        Querying the active tab…
+      </div>
+    </div>
+
+    <!-- ── Detail grid ── -->
+    <div class="info-grid" id="info-grid">
+      <div class="info-row">
+        <span class="info-key">Page</span>
+        <span class="info-val" id="info-page">—</span>
+      </div>
+      <div class="info-row">
+        <span class="info-key">Panel</span>
+        <span class="info-val" id="info-panel">—</span>
+      </div>
+      <div class="info-row">
+        <span class="info-key">Script</span>
+        <span class="info-val" id="info-script">—</span>
+      </div>
+      <div class="info-row">
+        <span class="info-key">Last seen</span>
+        <span class="info-val" id="info-ts">—</span>
+      </div>
+    </div>
+
+    <!-- ── Actions ── -->
+    <div class="btn-row">
+      <a class="btn primary" id="btn-open" href="https://www.ea.com/ea-sports-fc/ultimate-team/web-app/" target="_blank">
+        🌐 Open EA Web App
+      </a>
+      <button class="btn" id="btn-refresh" title="Re-check status">
+        ⟳ Refresh
+      </button>
+    </div>
+
+    <!-- ── Export section ── -->
+    <div class="export-section">
+      <div class="export-header">
+        <span>📥 Export Club Data</span>
+      </div>
+      <div class="export-btns">
+        <button class="btn" id="btn-export-both" title="Download JSON + CSV">
+          JSON + CSV
+          <small>Both formats</small>
+        </button>
+        <button class="btn" id="btn-export-json" title="Download JSON only">
+          JSON
+          <small>Structured</small>
+        </button>
+        <button class="btn" id="btn-export-csv" title="Download CSV only">
+          CSV
+          <small>For Excel</small>
+        </button>
+      </div>
+      <div class="export-status" id="export-status">
+        Select a format to export all club players
+      </div>
+    </div>
+
+    <!-- ── Tip ── -->
+    <div class="tip" id="tip-box">
+      <b>How to use:</b> Navigate to the EA FC 26 web app → Evolutions hub.
+      The floating <b>Evo Helper</b> panel will appear automatically.
+    </div>
+
+  </div>
+
+  <!-- ── Footer ── -->
+  <div class="footer">
+    <span class="footer-left" id="footer-left">Drop a new apply.js to update logic</span>
+    <a href="https://github.com/nezygis/fc26-playstyle-evo-helper" target="_blank">GitHub ↗</a>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

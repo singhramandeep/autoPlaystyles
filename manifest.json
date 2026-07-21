@@ -1,0 +1,54 @@
+{
+  "manifest_version": 3,
+  "name": "PlayStyle Evo Helper — FC26",
+  "version": "1.0.2",
+  "description": "Batch-apply PlayStyle / PlayStyle+ evolutions & export club player data on the EA FC 26 web app.",
+
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": [
+    "https://www.ea.com/*"
+  ],
+
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/*",
+        "https://www.ea.com/*/ultimate-team/web-app/*",
+        "https://www.ea.com/*ultimate-team/web-app*"
+      ],
+      "js": ["apply.js", "panel_extras.js"],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/*",
+        "https://www.ea.com/*/ultimate-team/web-app/*",
+        "https://www.ea.com/*ultimate-team/web-app*"
+      ],
+      "js": ["status.js"],
+      "run_at": "document_idle",
+      "world": "ISOLATED"
+    }
+  ],
+
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "PlayStyle Evo Helper — FC26",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+
+  "background": {
+    "service_worker": "background.js"
+  },
+
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
