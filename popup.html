@@ -44,18 +44,18 @@
       align-items: center;
       gap: 10px;
       padding: 14px 16px 12px;
-      border-bottom: 1px solid var(--border);
-      background: var(--bg2);
+      border-bottom: 1px solid #3d444d;
+      background: linear-gradient(135deg, #161b22 0%, #1f2738 100%);
     }
     .logo {
-      width: 32px; height: 32px;
-      border-radius: 8px;
-      background: linear-gradient(135deg, #1a2744 0%, #0d1117 100%);
-      border: 1px solid var(--border2);
+      width: 34px; height: 34px;
+      border-radius: 9px;
+      background: linear-gradient(135deg, #ec4899 0%, #8b5cf6 100%);
+      border: 1px solid rgba(255,255,255,0.2);
       display: flex; align-items: center; justify-content: center;
-      font-size: 18px;
+      font-size: 19px;
       flex-shrink: 0;
-      box-shadow: 0 0 10px rgba(63,185,80,0.15);
+      box-shadow: 0 0 12px rgba(236,72,153,0.4);
     }
     .title-block { flex: 1; min-width: 0; }
     .title {
@@ -66,19 +66,23 @@
     }
     .subtitle {
       font-size: 10px;
-      color: var(--muted);
+      color: #ec4899;
       font-family: var(--mono);
+      font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.08em;
     }
     .version-badge {
-      font: 700 10px var(--mono);
-      color: var(--muted);
-      border: 1px solid var(--border);
-      padding: 2px 6px;
-      border-radius: 4px;
+      font: 700 10.5px var(--mono);
+      color: #ffffff;
+      background: linear-gradient(135deg, #ec4899, #8b5cf6);
+      border: none;
+      padding: 3px 8px;
+      border-radius: 12px;
       white-space: nowrap;
       letter-spacing: 0.04em;
+      box-shadow: 0 0 10px rgba(236, 72, 153, 0.45);
+      text-shadow: 0 1px 2px rgba(0,0,0,0.3);
     }
 
     /* ── Main body ──────────────────────────────────────────── */
@@ -303,9 +307,9 @@
     <div class="logo">⚽</div>
     <div class="title-block">
       <div class="title">PlayStyle Evo Helper</div>
-      <div class="subtitle">FC 26 · Batch Evolution Tool</div>
+      <div class="subtitle">FC 26 · FUTTIES Edition</div>
     </div>
-    <span class="version-badge" id="ext-version">v1.0.0</span>
+    <span class="version-badge" id="ext-version">v2.2.0</span>
   </div>
 
   <div class="body">
@@ -325,6 +329,10 @@
     <!-- ── Detail grid ── -->
     <div class="info-grid" id="info-grid">
       <div class="info-row">
+        <span class="info-key">Version</span>
+        <span class="info-val ok" style="color: #ec4899; font-weight: 700;">v2.2.0 (FUTTIES 4 PS+)</span>
+      </div>
+      <div class="info-row">
         <span class="info-key">Page</span>
         <span class="info-val" id="info-page">—</span>
       </div>
@@ -339,6 +347,10 @@
       <div class="info-row">
         <span class="info-key">Last seen</span>
         <span class="info-val" id="info-ts">—</span>
+      </div>
+      <div class="info-row">
+        <span class="info-key">Players</span>
+        <span class="info-val" id="info-players">—</span>
       </div>
     </div>
 

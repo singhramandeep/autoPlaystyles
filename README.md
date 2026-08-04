@@ -33,7 +33,7 @@ This Chrome Extension injects a **floating control panel** into the EA FC 26 web
 - ✅ **Batch-apply** multiple PlayStyle / PlayStyle+ evolutions in one click
 - 🔄 **Bulk mode** — queue multiple players and evolve them all in sequence
 - ↩️ **Remove evolutions** — undo the last applied evo from a player
-- 🌟 **Glory Hunters support** — apply the special 4th PS+ slot for GH cards (rarity 109)
+- 🌟 **FUTTIES & Glory Hunters support** — search FUTTIES cards and apply up to 4 PS+ (rarities 70, 78, 104, 109, 128, 140–146, 169, 171–173)
 - 📊 **Live cap tracking** — shows used / remaining slots before you apply
 
 ---
@@ -251,7 +251,7 @@ These are enforced by `apply.js` and match EA's in-game rules:
 
 | Rule | Limit |
 |---|---|
-| **PlayStyle+** per player | 3 (4 for Glory Hunters rarity 109 cards) |
+| **PlayStyle+** per player | 4 (for FUTTIES & Glory Hunters cards, 3–4 overall) |
 | **Basic PlayStyle** per player | 8 |
 | Base PS and PS+ of the same name | Mutually exclusive — only one can be applied |
 | GK-only PlayStyles (`Far Reach`, `Footwork`, etc.) | Only applicable to Goalkeepers |

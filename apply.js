@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PlayStyle Evo Helper — FC26
 // @namespace    https://github.com/nezygis/fc26-playstyle-evo-helper
-// @version      2.1.4
+// @version      2.2.1
 // @description  Batch-apply PlayStyle / PlayStyle+ evolutions on the EA FC 26 web app. Single mode (one player, hand-pick) or Bulk mode (click players to queue and evolve many at once).
 // @author       nezygis
 // @homepageURL  https://github.com/nezygis/fc26-playstyle-evo-helper
@@ -36,7 +36,7 @@
 (function () {
   "use strict";
 
-  const CAP_PLUS = 3, CAP_BASIC = 8, TRAIT_OFFSET = 301; // traitId = rewardId - 301 (icon classes run 0..35)
+  const CAP_PLUS = 4, CAP_BASIC = 8, TRAIT_OFFSET = 301; // traitId = rewardId - 301 (icon classes run 0..35)
   const SETTLE_MS = 700; // wait after an apply/remove for the server to commit before re-fetching (else stale card)
   const REPO_URL = "https://github.com/nezygis/fc26-playstyle-evo-helper";
   // Clicking this opens the raw userscript, which Tampermonkey shows as an install/update page.
@@ -50,11 +50,50 @@
   // no-JS pixel endpoint with our own path so it logs "tool loaded", not EA's pages.
   // Dashboard: https://futhelper.goatcounter.com
   const METRICS_URL = "https://futhelper.goatcounter.com/count";
-  // Glory Hunters cards (Festival of Football rarity 109, or 104 "Red") can hold a
-  // 4th PS+ via account-specific reward evos — everyone else caps at 3.
+  // Glory Hunters (104, 109) and FUTTIES (70, 78, 128, 140-146, 169, 171-173) cards can hold up to 4 PS+.
   const GH_RARITIES = new Set([104, 109]);
+  const FUTTIES_RARITIES = new Set([70, 78, 128, 140, 141, 142, 143, 144, 145, 146, 169, 171, 172, 173]);
   const isGH = (it) => { try { return !!it && GH_RARITIES.has(it.rareflag); } catch (_) { return false; } };
-  const capPlus = (it) => (isGH(it) ? 4 : CAP_PLUS);
+  const isFUTTIES = (it) => { try { return !!it && FUTTIES_RARITIES.has(it.rareflag); } catch (_) { return false; } };
+
+  // Helper functions for inspecting PlayStyles on player entities
+  const numPlus = (it) => {
+    if (!it) return null;
+    try { if (typeof it.getNumPlusPlayStyles === "function") return it.getNumPlusPlayStyles(); } catch (_) {}
+    try {
+      const ps = typeof it.getPlayStyles === "function" ? it.getPlayStyles() : (it._playStyles || []);
+      if (Array.isArray(ps)) return ps.filter((p) => p && (p.isIcon || p.isPlus)).length;
+    } catch (_) {}
+    return null;
+  };
+  const numBasic = (it) => {
+    if (!it) return null;
+    try { if (typeof it.getNumBasicPlayStyles === "function") return it.getNumBasicPlayStyles(); } catch (_) {}
+    try {
+      const ps = typeof it.getPlayStyles === "function" ? it.getPlayStyles() : (it._playStyles || []);
+      if (Array.isArray(ps)) return ps.filter((p) => p && !p.isIcon && !p.isPlus).length;
+    } catch (_) {}
+    return null;
+  };
+
+  // Dynamically inspect max allowed PS+ and basic PlayStyles per player item
+  const capPlus = (it) => {
+    if (!it) return 4;
+    try { if (typeof it.getMaxPlusPlayStyles === "function") { const m = it.getMaxPlusPlayStyles(); if (m && m > 0) return m; } } catch (_) {}
+    try { if (typeof it.getMaxPlayStyles === "function") { const m = it.getMaxPlayStyles(); if (m && m > 0) return m; } } catch (_) {}
+    try { if (it.maxPlusPlayStyles != null && +it.maxPlusPlayStyles > 0) return +it.maxPlusPlayStyles; } catch (_) {}
+    let curPlus = 0;
+    try { const n = numPlus(it); if (n != null) curPlus = n; } catch (_) {}
+    return Math.max(4, curPlus);
+  };
+  const capBasic = (it) => {
+    if (!it) return 8;
+    try { if (typeof it.getMaxBasicPlayStyles === "function") { const m = it.getMaxBasicPlayStyles(); if (m && m > 0) return m; } } catch (_) {}
+    try { if (it.maxBasicPlayStyles != null && +it.maxBasicPlayStyles > 0) return +it.maxBasicPlayStyles; } catch (_) {}
+    let curBasic = 0;
+    try { const n = numBasic(it); if (n != null) curBasic = n; } catch (_) {}
+    return Math.max(8, curBasic);
+  };
 
   // Catalog: n=name, s=slotId, r=rewardId(=traitId+301), g=gk-only
   const PS = [{"n":"Finesse Shot","s":2141,"r":301,"g":0},{"n":"Far Throw","s":2142,"r":331,"g":1},{"n":"Enforcer","s":2143,"r":330,"g":0},{"n":"Intercept","s":2144,"r":317,"g":0},{"n":"Whipped Pass","s":2145,"r":313,"g":0},{"n":"Long Ball Pass","s":2146,"r":311,"g":0},{"n":"Incisive Pass","s":2147,"r":309,"g":0},{"n":"Deflector","s":2148,"r":336,"g":1},{"n":"Quick Step","s":2149,"r":326,"g":0},{"n":"Trickster","s":2150,"r":324,"g":0},{"n":"Slide Tackle","s":2151,"r":319,"g":0},{"n":"Aerial Fortress","s":2152,"r":320,"g":0},{"n":"Tiki Taka","s":2153,"r":312,"g":0},{"n":"Gamechanger","s":2154,"r":308,"g":0},{"n":"Chip Shot","s":2155,"r":302,"g":0},{"n":"Cross Claimer","s":2156,"r":333,"g":1},{"n":"Bruiser","s":2157,"r":329,"g":0},{"n":"Precision Header","s":2158,"r":305,"g":0},{"n":"Acrobatic","s":2159,"r":306,"g":0},{"n":"Long Throw","s":2160,"r":328,"g":0},{"n":"Press Proven","s":2161,"r":325,"g":0},{"n":"Block","s":2162,"r":316,"g":0},{"n":"Pinged Pass","s":2163,"r":310,"g":0},{"n":"Inventive","s":2164,"r":314,"g":0},{"n":"Power Shot","s":2165,"r":303,"g":0},{"n":"1v1 Close Down","s":2166,"r":334,"g":1},{"n":"Relentless","s":2167,"r":327,"g":0},{"n":"Rapid","s":2168,"r":322,"g":0},{"n":"Jockey","s":2169,"r":315,"g":0},{"n":"Anticipate","s":2170,"r":318,"g":0},{"n":"Low Driven Shot","s":2171,"r":307,"g":0},{"n":"Dead Ball","s":2172,"r":304,"g":0},{"n":"Far Reach","s":2173,"r":335,"g":1},{"n":"Footwork","s":2174,"r":332,"g":1},{"n":"Technical","s":2175,"r":321,"g":0},{"n":"First Touch","s":2176,"r":323,"g":0}];
@@ -133,8 +172,8 @@
     return out;
   }
 
-  // rareflag ids these evos can be applied to (defaults the club-search filter).
-  const ELIGIBLE_RARITIES = [30,94,98,103,109]; // 103 = FoF National Pride Red (untradeable)
+  // rareflag ids these evos can be applied to (empty = search all club rarities by default).
+  const ELIGIBLE_RARITIES = []; // empty = load all club players including FUTTIES, TOTS, TOTY, etc.
 
   // position id (UTLocalizationUtil) -> role group
   const POS_GROUP = {
@@ -145,7 +184,7 @@
   };
 
   // rareflag -> name (EA obfuscates in-app names). Editable via data/rarities.json.
-  const RARITIES = {"0":"Common","1":"Rare","3":"Team of the Week","5":"Team of the Year","8":"Star Performer","11":"Team of the Season","12":"Icon","14":"Knockout Royalty Hero","15":"Knockout Royalty ICON","18":"Festival of Football ICON","20":"FoF: Answer the Call","21":"Prime Hero","22":"Ratings Reload","23":"Future Stars Hero","26":"UCL Primetime Hero","27":"UWCL Primetime Hero","28":"Festival of Football: Captains","30":"FUT Birthday","31":"UEFA Women's Champions League Primetime","32":"UEFA Women's Champions League Road to the Final","33":"Thunderstruck","34":"FC Pro Live","35":"Winter Wildcards ICON","36":"Journey of Nations","46":"UEFA Europa League Primetime","49":"Winter Wildcards Hero","50":"UEFA Champions League Primetime","55":"Knockout Royalty","57":"Showdown Upgrade","58":"Showdown","62":"Festival of Football Showdown","63":"Festival of Football Showdown Upgrade","64":"TOTY Honourable Mentions","65":"TOTS Honourable Mentions","69":"World Tour Silver Superstar","71":"Future Stars","72":"Heroes","76":"Trophy Titans ICON","77":"Trophy Titans Hero","81":"Classic XI Hero","82":"Unbreakables","83":"Unbreakables Hero","85":"Unbreakables ICON","88":"Unbreakables Evolution","90":"Moments","91":"World Tour","94":"Festival of Football: Star Performer","96":"Joga Bonito","97":"Joga Bonito Hero","98":"Festival of Football: National Pride","103":"Festival of Football: National Pride Red","104":"Festival of Football: Glory Hunters Red","105":"UEFA Conference League Primetime","107":"Festival of Football: Path to Glory","108":"Time Warp","109":"Festival of Football: Glory Hunters","111":"Fantasy FC","112":"Time Warp ICON","116":"Festival of Football: Captains ICON","117":"Winter Wildcards","120":"TOTS Breakthrough","124":"UEFA Champions League Road to the Final","125":"UEFA Europa League Road to the Final","126":"UEFA Conference League Road to the Final","130":"Festival of Football: Greats of the Game Hero","131":"Festival of Football: Greats of the Game ICON","132":"TOTY HM Evolution","135":"Fantasy FC Hero","147":"FUT Birthday EVO","148":"FUT Birthday Hero","149":"FUT Birthday ICON","150":"Cornerstones","151":"Ultimate Scream","155":"Team of the Year ICON","157":"Thunderstruck ICON","168":"Ultimate Scream Hero","170":"Future Stars ICON"};
+  const RARITIES = {"0":"Common","1":"Rare","3":"Team of the Week","5":"Team of the Year","8":"Star Performer","11":"Team of the Season","12":"Icon","14":"Knockout Royalty Hero","15":"Knockout Royalty ICON","18":"Festival of Football ICON","20":"FoF: Answer the Call","21":"Prime Hero","22":"Ratings Reload","23":"Future Stars Hero","26":"UCL Primetime Hero","27":"UWCL Primetime Hero","28":"Festival of Football: Captains","30":"FUT Birthday","31":"UEFA Women's Champions League Primetime","32":"UEFA Women's Champions League Road to the Final","33":"Thunderstruck","34":"FC Pro Live","35":"Winter Wildcards ICON","36":"Journey of Nations","46":"UEFA Europa League Primetime","49":"Winter Wildcards Hero","50":"UEFA Champions League Primetime","55":"Knockout Royalty","57":"Showdown Upgrade","58":"Showdown","62":"Festival of Football Showdown","63":"Festival of Football Showdown Upgrade","64":"TOTY Honourable Mentions","65":"TOTS Honourable Mentions","69":"World Tour Silver Superstar","70":"FUTTIES","71":"Future Stars","72":"Heroes","76":"Trophy Titans ICON","77":"Trophy Titans Hero","78":"FUTTIES Hero","81":"Classic XI Hero","82":"Unbreakables","83":"Unbreakables Hero","85":"Unbreakables ICON","88":"Unbreakables Evolution","90":"Moments","91":"World Tour","94":"Festival of Football: Star Performer","96":"Joga Bonito","97":"Joga Bonito Hero","98":"Festival of Football: National Pride","103":"Festival of Football: National Pride Red","104":"Festival of Football: Glory Hunters Red","105":"UEFA Conference League Primetime","107":"Festival of Football: Path to Glory","108":"Time Warp","109":"Festival of Football: Glory Hunters","111":"Fantasy FC","112":"Time Warp ICON","116":"Festival of Football: Captains ICON","117":"Winter Wildcards","120":"TOTS Breakthrough","124":"UEFA Champions League Road to the Final","125":"UEFA Europa League Road to the Final","126":"UEFA Conference League Road to the Final","128":"FUTTIES ICON","130":"Festival of Football: Greats of the Game Hero","131":"Festival of Football: Greats of the Game ICON","132":"TOTY HM Evolution","135":"Fantasy FC Hero","140":"FUTTIES Evolution","141":"FUTTIES Premium","142":"FUTTIES Premium Hero","143":"FUTTIES Premium ICON","144":"FUTTIES Re-Release","145":"FUTTIES Batch 1","146":"FUTTIES Batch 2","147":"FUT Birthday EVO","148":"FUT Birthday Hero","149":"FUT Birthday ICON","150":"Cornerstones","151":"Ultimate Scream","155":"Team of the Year ICON","157":"Thunderstruck ICON","168":"Ultimate Scream Hero","169":"FUTTIES Batch 3","170":"Future Stars ICON","171":"FUTTIES Premium Evolution","172":"FUTTIES Red","173":"FUTTIES Pink"};
 
   const state = {
     mode: "single", // "single" (manual, one player) | "auto" (bulk auto-resolve)
@@ -154,6 +193,7 @@
     queue: [], // auto-mode: [{ item, role:{pos,role}, slots:[slotIds] }] — click a player to add
     running: false, abort: false,
     rarities: new Set(), // allowed rareflags for club search; empty = all
+    trdFilter: "all", // "all" | "trd" (tradeable) | "untr" (untradeable)
     clubItems: null, // players we loaded ourselves (full club / eligible rarities)
   };
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -377,7 +417,20 @@
     if (e.error && e.error.message) return `${e.error.code || ""} ${e.error.message}`.trim();
     return code ? "status=" + code : (e.message || String(e));
   }
-  const byId = (s) => ALL.find((x) => x.s === s);
+  const byId = (s) => {
+    try {
+      return ALL.find((x) => x.s === s) || (state.ghEvos && state.ghEvos.find((x) => x.s === s));
+    } catch (_) { return null; }
+  };
+  function getEvoKind(slotId) {
+    try {
+      const e = byId(slotId);
+      if (e && e.kind) return e.kind;
+      if (slotId >= 2181) return "PS+";
+      if (slotId >= 2141) return "PS";
+    } catch (_) {}
+    return "PS";
+  }
 
   // --- Player helpers -------------------------------------------------------
   // Memoized: the source array reference + length change whenever the club is
@@ -407,7 +460,9 @@
     return c;
   }
   function setClubStatus(text, cls) {
-    if (els.clubstat) { els.clubstat.textContent = text; els.clubstat.className = "clubstat " + (cls || ""); }
+    try {
+      if (els && els.clubstat) { els.clubstat.textContent = text; els.clubstat.className = "clubstat " + (cls || ""); }
+    } catch (_) {}
   }
   // The active squad being loaded is a good "app is ready for club searches" signal.
   function getActiveSquad() {
@@ -473,7 +528,7 @@
   async function startClubLoad(attempt, manual) {
     if (clubLoading && !manual) return;
     clubLoading = true;
-    const rarities = (ELIGIBLE_RARITIES && ELIGIBLE_RARITIES.length) ? ELIGIBLE_RARITIES : null;
+    const rarities = null; // load all club players without backend rarity restriction
     setClubStatus("Club: loading…" + (attempt > 1 ? " (retry " + attempt + ")" : ""), "load");
     try {
       const n = await loadClub(rarities);
@@ -510,7 +565,7 @@
   // Reload, then re-select the player by id so the new playstyles/counts render.
   async function reloadAndReselect(itemId) {
     if (!(window.services && window.services.Club && window.services.Club.search)) return false;
-    const rarities = (ELIGIBLE_RARITIES && ELIGIBLE_RARITIES.length) ? ELIGIBLE_RARITIES : null;
+    const rarities = null; // load all club players without backend rarity restriction
     setClubStatus("Club: refreshing after apply…", "load");
     try {
       const n = await loadClub(rarities);
@@ -603,7 +658,10 @@
     console.log("[FCEvo] eligible rarities for slot " + slotId + ":\n" + res.map((r) => `${r.rf}\t${r.name}\t×${r.count}`).join("\n") + "\n\nids: " + JSON.stringify(res.map((r) => r.rf)));
     return res;
   }
-  const isGKItem = (it) => { try { return !!it.isGK(); } catch (_) { return false; } };
+  const isGKItem = (it) => {
+    try { if (it && typeof it.isGK === "function" && it.isGK()) return true; } catch (_) {}
+    return !!it && (it.preferredPosition === 0 || it.preferredPosition === 28);
+  };
   // Player's role groups from current positions (preferred first, then alts), deduped.
   function playerPositionGroups(it) {
     let ids = null;
@@ -618,8 +676,6 @@
     });
     return groups;
   }
-  const numBasic = (it) => { try { return it.getNumBasicPlayStyles(); } catch (_) { return null; } };
-  const numPlus = (it) => { try { return it.getNumPlusPlayStyles(); } catch (_) { return null; } };
   function hasEvo(it, evo) {
     const t = evo.r - TRAIT_OFFSET;
     try { return evo.kind === "PS+" ? !!it.hasPlusPlayStyle(t) : !!it.hasBasePlayStyle(t); } catch (_) { return false; }
@@ -923,6 +979,48 @@
     #fcevo .psrow .chip i{font-family:'UltimateTeam-Icons',sans-serif;font-style:normal;font-weight:400;font-size:19px;line-height:1}
     #fcevo .psrow .chip.noglyph::after{content:attr(data-ini);font:800 11px var(--grot);color:var(--bone)}
     #fcevo .psrow .chip.ic{border-color:#7d6320;background:rgba(155,120,25,.14);color:var(--gold1)}
+    /* Tradeable / Untradeable Badges */
+    .trd-badge{font:700 8.5px/1 var(--mono);padding:1.5px 4px;border-radius:3px;text-transform:uppercase;flex:none;display:inline-block;margin-left:4px;vertical-align:middle}
+    .trd-badge.trd{background:rgba(62,207,106,0.15);color:#3ecf6a;border:1px solid rgba(62,207,106,0.3)}
+    .trd-badge.untr{background:rgba(224,82,82,0.15);color:#e05252;border:1px solid rgba(224,82,82,0.3)}
+    .pos-chip{font:800 8.5px/1 var(--mono);padding:1.5px 4px;border-radius:3px;background:rgba(46,165,255,0.15);color:#2ea5ff;border:1px solid rgba(46,165,255,0.3);margin-left:4px;vertical-align:middle;display:inline-block;text-transform:uppercase}
+    #fcevo .trdbtn, #fcevo .psfilterbtn{display:flex;align-items:center;white-space:nowrap}
+    #fcevo .view-btn{background:transparent;border:1px solid var(--line2);color:var(--ash);font:600 9.5px/1 var(--mono);padding:3px 6px;border-radius:3px;cursor:pointer;margin-left:auto;flex:none;transition:all .15s}
+    #fcevo .view-btn:hover{color:var(--acc);border-color:var(--acc);background:rgba(46,165,255,0.12)}
+    
+    /* Attribute Viewer Modal Overlay */
+    .fcevo-modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483647;background:rgba(10,14,20,.85);backdrop-filter:blur(8px);display:none;align-items:center;justify-content:center;padding:16px;box-sizing:border-box}
+    .fcevo-modal-overlay.open{display:flex}
+    .fcevo-modal-dialog{background:#141c24;border:1px solid #2a3a4a;border-radius:12px;width:100%;max-width:560px;max-height:90vh;overflow-y:auto;padding:18px;box-shadow:0 25px 60px -15px #000;position:relative;color:#e0eaf4;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+    .fcevo-modal-close{position:absolute;top:12px;right:14px;background:none;border:0;color:#7a8a9a;font-size:22px;cursor:pointer;line-height:1}
+    .fcevo-modal-close:hover{color:#e0eaf4}
+    .attr-hdr{display:flex;align-items:center;gap:12px;border-bottom:1px solid #222e3c;padding-bottom:12px}
+    .attr-ovr{font:800 32px/1 var(--grot,sans-serif);color:#2ea5ff}
+    .attr-name{font:800 17px/1.2 var(--grot,sans-serif);color:#e0eaf4}
+    .attr-meta{font-size:11.5px;color:#7a8a9a;margin-top:3px;display:flex;align-items:center;gap:6px}
+    .attr-meta-strip{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:10px 0;background:#1c2632;padding:8px 10px;border-radius:6px;border:1px solid #263445}
+    .attr-meta-strip.full-bio{grid-template-columns:repeat(2,1fr);gap:8px}
+    .attr-meta-strip .mitem small{display:block;font-size:9.5px;color:#7a8a9a;text-transform:uppercase}
+    .attr-meta-strip .mitem b{font-size:11.5px;color:#e0eaf4}
+    .pos-badge{font:800 10.5px/1 var(--mono,monospace);padding:3px 7px;border-radius:4px;display:inline-block;text-transform:uppercase}
+    .pos-badge.main{background:#2ea5ff;color:#0a0e14;border:1px solid #52b4ff}
+    .pos-badge.alt{background:#1c2632;color:#a0b4c8;border:1px solid #2a3a4a}
+    .attr-sec-title{font:700 10.5px/1 var(--mono,monospace);color:#2ea5ff;text-transform:uppercase;letter-spacing:.1em;margin:14px 0 7px;border-bottom:1px solid #222e3c;padding-bottom:4px}
+    .face-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:5px}
+    .face-stat{background:#1c2632;border:1px solid #263445;padding:6px 2px;text-align:center;border-radius:5px}
+    .face-stat .fv{font:800 15px/1 var(--grot,sans-serif)}
+    .face-stat .fl{font-size:8.5px;color:#7a8a9a;text-transform:uppercase;margin-top:3px}
+    .sub-cats-wrapper{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+    .sub-cat{background:#18222d;border:1px solid #222e3c;border-radius:6px;padding:7px 8px}
+    .sub-h{font:700 9.5px/1 var(--mono,monospace);color:#7a8a9a;text-transform:uppercase;margin-bottom:5px;letter-spacing:.08em}
+    .sub-grid{display:flex;flex-direction:column;gap:2.5px}
+    .sub-row{display:flex;justify-content:space-between;font-size:10.5px}
+    .sub-l{color:#9ab0c4}
+    .sub-v{font-weight:700;font-family:monospace}
+    .hi90{color:#3ecf6a!important}.hi80{color:#2ea5ff!important}.mid{color:#e0eaf4!important}.lo{color:#7a8a9a!important}
+    .ps-grid{display:flex;flex-wrap:wrap;gap:5px}
+    .ps-item{display:flex;align-items:center;gap:5px;background:#1c2632;border:1px solid #263445;padding:3px 7px;border-radius:5px;font-size:10.5px}
+    .ps-item.plus{border-color:#7d6320;background:rgba(155,120,25,.18);color:#e5b638}
     #fcevo .opts{display:flex;gap:14px;align-items:center;flex-wrap:wrap;font:10px/1.4 var(--mono);text-transform:uppercase;letter-spacing:.08em;color:var(--ash)}
     #fcevo .opts input[type=number]{font-family:var(--mono)}
     #fcevo .go{background:var(--acc);color:var(--acc-ink);border:0;border-radius:0;padding:12px;cursor:pointer;
@@ -958,7 +1056,7 @@
     const root = document.createElement("div");
     root.id = "fcevo";
     root.innerHTML = `
-      <header><b class="wm">Evo&nbsp;Helper</b><i class="dia" aria-hidden="true"></i><a class="upd" id="fcevo-upd" href="${INSTALL_URL}" target="_blank" rel="noopener noreferrer" title="New version available — click to update" style="display:none">⬆ update</a><span class="sp"></span><button data-act="settings" class="hbtn" title="Settings">⚙</button><button data-act="min" title="Collapse"><svg class="chev" viewBox="0 0 14 9" width="12" height="8" aria-hidden="true"><path d="M1 6.5L7 1.5L13 6.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button data-act="close" class="xbtn" title="Close (until page reload)">✕</button></header>
+      <header><b class="wm">Evo&nbsp;Helper <span style="font-size:9px;background:linear-gradient(135deg,#ec4899,#8b5cf6);color:#fff;padding:1px 5px;border-radius:4px;vertical-align:middle;margin-left:4px;font-weight:700;box-shadow:0 0 6px rgba(236,72,153,0.5);">v2.2.0</span></b><i class="dia" aria-hidden="true"></i><a class="upd" id="fcevo-upd" href="${INSTALL_URL}" target="_blank" rel="noopener noreferrer" title="New version available — click to update" style="display:none">⬆ update</a><span class="sp"></span><button data-act="settings" class="hbtn" title="Settings">⚙</button><button data-act="min" title="Collapse"><svg class="chev" viewBox="0 0 14 9" width="12" height="8" aria-hidden="true"><path d="M1 6.5L7 1.5L13 6.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button data-act="close" class="xbtn" title="Close (until page reload)">✕</button></header>
       <div class="notice-overlay" id="fcevo-notice" data-act="notice-hide" style="display:none"><div class="notice-card"><div class="notice-title" id="fcevo-notice-title"></div><div class="notice-body" id="fcevo-notice-body"></div><a class="notice-link" id="fcevo-notice-link" target="_blank" rel="noopener noreferrer" style="display:none"></a><button class="notice-x" data-act="notice-hide">Got it</button></div></div>
       <div class="setpanel" id="fcevo-settings" style="display:none">
         <label title="Add the player to each slot, then claim/finish it so the PlayStyle is locked in."><input type="checkbox" id="fcevo-claim" checked> claim &amp; finish</label>
@@ -974,8 +1072,10 @@
         <div class="sec">
           <h4><span class="ix">01</span> <span id="fcevo-pickhdr">Select from club</span></h4>
           <div class="row srow">
-            <input type="text" id="fcevo-search" placeholder="search club by name…">
+            <input type="text" id="fcevo-search" placeholder="search name or rarity (e.g. futties)…">
             <button class="mini rarbtn" data-act="rar" id="fcevo-rarbtn">Rarity: all ▾</button>
+            <button class="mini trdbtn" data-act="trd" id="fcevo-trdbtn" title="Filter by Tradeable / Untradeable status">Trade: all ▾</button>
+            <button class="mini psfilterbtn" data-act="psfilter" id="fcevo-psfilterbtn" title="Filter by PlayStyles: All / Clean (0 PS) / Has PS">PS: all ▾</button>
           </div>
           <div class="rarpanel" id="fcevo-rarpanel"></div>
           <div class="clubstat" id="fcevo-clubstat" data-act="reloadclub" title="Click to reload the club">Club: waiting for app…</div>
@@ -1023,7 +1123,10 @@
       count: q("#fcevo-count"), status: q("#fcevo-status"), run: q('[data-act="run"]'), stop: q('[data-act="stop"]'),
       claim: q("#fcevo-claim"), delay: q("#fcevo-delay"),
       settings: q("#fcevo-settings"), startmin: q("#fcevo-startmin"),
-      rarbtn: q("#fcevo-rarbtn"), rarpanel: q("#fcevo-rarpanel"), clubstat: q("#fcevo-clubstat"),
+      rarbtn: q("#fcevo-rarbtn"),
+      trdbtn: q("#fcevo-trdbtn"),
+      psfilterbtn: q("#fcevo-psfilterbtn"),
+      rarpanel: q("#fcevo-rarpanel"), clubstat: q("#fcevo-clubstat"),
       pos: q("#fcevo-pos"), role: q("#fcevo-role"),
       runbtn: q("#fcevo-runbtn"), clearsel: q("#fcevo-clearsel"), pickhdr: q("#fcevo-pickhdr"),
       evosec: q("#fcevo-evosec"), list: q("#fcevo-list"),
@@ -1046,15 +1149,13 @@
     }
 
     root.addEventListener("click", onClick);
-    let searchTimer = null;
-    q("#fcevo-search").addEventListener("input", (e) => {
-      const v = e.target.value.trim().toLowerCase();
-      clearTimeout(searchTimer);
-      searchTimer = setTimeout(() => { searchQ = v; renderList(); }, 150);
-    });
+    els.search.addEventListener("input", (e) => { searchQ = e.target.value.trim().toLowerCase(); renderList(); });
+    els.search.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); els.search.value = ""; searchQ = ""; renderList(); } });
+    if (els.trdbtn) els.trdbtn.addEventListener("click", onTrdToggle);
+    if (els.psfilterbtn) els.psfilterbtn.addEventListener("click", onPsFilterToggle);
     // A prior pick leaves the player's name in the box; select it so typing
     // immediately searches for a different player instead of appending.
-    q("#fcevo-search").addEventListener("focus", (e) => { if (state.item) e.target.select(); });
+    els.search.addEventListener("focus", (e) => { if (state.item) e.target.select(); });
     els.pos.addEventListener("change", populateRoles);
     // Re-check glyphs once the EA icon font finishes loading (avoids a flash of
     // initials on first paint before the font is ready).
@@ -1196,7 +1297,7 @@
       setTimeout(() => { if (b && b.dataset.armed === "1") { b.dataset.armed = ""; b.textContent = "Remove last evo"; b.classList.remove("armed"); } }, 3500);
       return;
     }
-    if (act === "rar") return toggleRarPanel();
+    if (act === "psfilter") return onPsFilterToggle();
     if (act === "suggest") return suggest();
     if (act === "none") { current().forEach((x) => state.selected.delete(x.s)); return (renderGrid(), updateCount()); }
     if (act === "run") return requestRun({ delayMs: +els.delay.value, claim: els.claim.checked });
@@ -1275,21 +1376,327 @@
     renderList();
   }
 
+  function onTrdToggle() {
+    if (state.trdFilter === "all") state.trdFilter = "trd";
+    else if (state.trdFilter === "trd") state.trdFilter = "untr";
+    else state.trdFilter = "all";
+
+    if (els.trdbtn) {
+      if (state.trdFilter === "trd") els.trdbtn.textContent = "Trade: 💰 TRD";
+      else if (state.trdFilter === "untr") els.trdbtn.textContent = "Trade: 🔒 UNT";
+      else els.trdbtn.textContent = "Trade: all ▾";
+    }
+    renderList();
+  }
+
+  function onPsFilterToggle() {
+    if (state.psFilter === "all") state.psFilter = "none";
+    else if (state.psFilter === "none") state.psFilter = "has";
+    else state.psFilter = "all";
+
+    if (els.psfilterbtn) {
+      if (state.psFilter === "none") els.psfilterbtn.textContent = "PS: ⚪ 0 PS";
+      else if (state.psFilter === "has") els.psfilterbtn.textContent = "PS: ⚡ Has PS";
+      else els.psfilterbtn.textContent = "PS: all ▾";
+    }
+    renderList();
+  }
+
+  const SUB_LABELS = {
+    acceleration: "Acceleration", sprintspeed: "Sprint Speed", agility: "Agility", balance: "Balance",
+    jumping: "Jumping", stamina: "Stamina", strength: "Strength", reactions: "Reactions",
+    aggression: "Aggression", composure: "Composure", interceptions: "Interceptions", positioning: "Positioning",
+    vision: "Vision", ballcontrol: "Ball Control", crossing: "Crossing", dribbling: "Dribbling",
+    finishing: "Finishing", fkaccuracy: "FK Accuracy", heading: "Heading Acc.", longpassing: "Long Passing",
+    shortpassing: "Short Passing", defaware: "Def. Awareness", shotpower: "Shot Power", longshots: "Long Shots",
+    standtackle: "Stand Tackle", slidetackle: "Slide Tackle", volleys: "Volleys", curve: "Curve", penalties: "Penalties",
+    gkdiving: "GK Diving", gkhandling: "GK Handling", gkkicking: "GK Kicking", gkreflexes: "GK Reflexes", gkpositioning: "GK Pos."
+  };
+  const FACE_OUT = ["PAC", "SHO", "PAS", "DRI", "DEF", "PHY"];
+  const FACE_GK = ["DIV", "HAN", "KIC", "REF", "SPD", "POS"];
+  const FOOT = { 1: "Right", 2: "Left" };
+  const WORK_RATE = { 1: "Low", 2: "Med", 3: "High" };
+  const BODY_TYPE = { 0: "Unique", 1: "Lean", 2: "Average", 3: "Stocky", 4: "High & Lean", 5: "High & Avg", 6: "High & Stocky" };
+  const safe = (fn) => { try { return fn(); } catch (_) { return null; } };
+  function calcAge(dob) {
+    if (!dob) return null;
+    try {
+      const b = new Date(dob);
+      const diff = Date.now() - b.getTime();
+      const ageDate = new Date(diff);
+      return Math.abs(ageDate.getUTCFullYear() - 1970);
+    } catch (_) { return null; }
+  }
+
+  function isUntradeableCard(it) {
+    if (!it) return false;
+    try { if (typeof it.isUntradeable === "function") return !!it.isUntradeable(); } catch (_) {}
+    try { if (typeof it.isTradeable === "function") return !it.isTradeable(); } catch (_) {}
+    try { if (it.untradeable != null) return !!it.untradeable; } catch (_) {}
+    try { if (it._untradeable != null) return !!it._untradeable; } catch (_) {}
+    try { if (it.untradable != null) return !!it.untradable; } catch (_) {}
+    try { if (it.tradeable != null) return !it.tradeable; } catch (_) {}
+    try { if (it._tradeable != null) return !it._tradeable; } catch (_) {}
+    try { if (it._itemData && (it._itemData.untradeable || it._itemData._untradeable)) return true; } catch (_) {}
+    try { if (it._itemData && typeof it._itemData.isUntradeable === "function") return !!it._itemData.isUntradeable(); } catch (_) {}
+    return false;
+  }
+
+  const CHEM_STYLES = {
+    250: "Basic", 251: "Sniper", 252: "Finisher", 253: "Deadeye", 254: "Marksman", 255: "Hawk",
+    256: "Artist", 257: "Architect", 258: "Powerhouse", 259: "Maestro", 260: "Engine",
+    261: "Sentinel", 262: "Guardian", 263: "Gladiator", 264: "Backbone", 265: "Anchor",
+    266: "Hunter", 267: "Shadow", 268: "Wall", 269: "Shield", 270: "Cat", 271: "Glove", 272: "GK Basic"
+  };
+  function getChemStyleName(it) {
+    if (!it) return "None";
+    const id = it.chemistryStyle ?? it.playStyle ?? it._chemistryStyle;
+    if (id != null && CHEM_STYLES[id]) return CHEM_STYLES[id];
+    try { if (window.UTLocalizationUtil && typeof window.UTLocalizationUtil.getChemistryStyleName === "function") return window.UTLocalizationUtil.getChemistryStyleName(id); } catch (_) {}
+    return id != null ? "Style " + id : "None";
+  }
+  function getPlayerStats(it) {
+    if (!it) return { games: 0, goals: 0, assists: 0, yellowCards: 0, redCards: 0 };
+    const st = it.stats || it._stats || it.lifetimeStats || it._itemData || {};
+    const games = it.games ?? st.games ?? safe(() => it.getGamesPlayed()) ?? 0;
+    const goals = it.goals ?? st.goals ?? safe(() => it.getGoals()) ?? 0;
+    const assists = it.assists ?? st.assists ?? safe(() => it.getAssists()) ?? 0;
+    const yellowCards = it.yellowCards ?? st.yellowCards ?? st.yellows ?? 0;
+    const redCards = it.redCards ?? st.redCards ?? st.reds ?? 0;
+    return { games, goals, assists, yellowCards, redCards };
+  }
+  function getInjuryDetails(it) {
+    if (!it) return "Healthy";
+    try { if (typeof it.isInjured === "function" && !it.isInjured()) return "Healthy"; } catch (_) {}
+    const games = it.injuryGames ?? it._injuryGames ?? 0;
+    if (games > 0) return `Injured (${games} match${games > 1 ? "es" : ""})`;
+    return "Healthy";
+  }
+  const POS_GROUP_NAME = {
+    "GK": "GK", "CB": "CB", "RB": "RB / LB", "LB": "RB / LB", "RWB": "RB / LB", "LWB": "RB / LB",
+    "CDM": "CDM", "CM": "CM", "CAM": "CAM", "RM": "RM / LM", "LM": "RM / LM",
+    "RW": "RW / LW", "LW": "RW / LW", "ST": "ST", "CF": "ST"
+  };
+  function getPositionRoles(posList) {
+    const out = [];
+    (posList || []).forEach((posName) => {
+      const group = POS_GROUP_NAME[posName] || posName;
+      const roles = ROLES[group] || ROLES[posName];
+      if (roles) out.push({ pos: posName, roles });
+    });
+    return out;
+  }
+  function getPlayerFullName(it) {
+    if (!it) return "Unknown";
+    const sd = (it.getStaticData ? it.getStaticData() : it._staticData) || {};
+    const fn = sd.firstName || "";
+    const ln = sd.lastName || "";
+    const cn = sd.commonName || "";
+    if (cn) return cn + (fn || ln ? ` (${[fn, ln].filter(Boolean).join(" ")})` : "");
+    const full = [fn, ln].filter(Boolean).join(" ");
+    return full || playerName(it);
+  }
+
+  function openAttrModal(it) {
+    if (!it) return;
+    let modal = document.getElementById("fcevo-attr-modal");
+    if (!modal) {
+      modal = document.createElement("div");
+      modal.id = "fcevo-attr-modal";
+      document.body.appendChild(modal);
+    }
+    modal.className = "fcevo-modal-overlay open";
+
+    try {
+      const sd = (it.getStaticData ? it.getStaticData() : it._staticData) || {};
+      const name = playerName(it);
+      const fullName = getPlayerFullName(it);
+      const rarity = rarityName(it);
+      const isGK = isGKItem(it);
+      const isUntr = isUntradeableCard(it);
+      const is1stOwner = safe(() => (typeof it.isFirstOwner === "function" ? it.isFirstOwner() : !!it.firstOwner)) || false;
+
+      // Positions & Roles
+      const posInfo = getPlayerPositions(it);
+      const mainPosBadge = `<span class="pos-badge main">${esc(posInfo.mainPos)}</span>`;
+      const altPosBadges = posInfo.alts.length
+        ? posInfo.alts.map((p) => `<span class="pos-badge alt">${esc(p)}</span>`).join(" ")
+        : '<span class="muted" style="font-size:11px">None</span>';
+
+      const posRoles = getPositionRoles(posInfo.all);
+      const posRolesHtml = posRoles.map((r) => `
+        <div class="sub-cat" style="margin-bottom:4px">
+          <div class="sub-h" style="color:#2ea5ff">${esc(r.pos)} Roles</div>
+          <div style="font-size:11px;color:#e0eaf4">${esc(r.roles.join(" · "))}</div>
+        </div>
+      `).join("") || '<div class="muted" style="font-size:11px">Standard position roles</div>';
+
+      // Club / League / Nation
+      const nationId = safe(() => sd.nationality ?? it.nationality ?? it.nation);
+      const teamId = safe(() => it.teamId ?? sd.teamId);
+      const leagueId = safe(() => it.leagueId ?? sd.leagueId);
+
+      const nationName = getNationName(nationId) || (nationId != null ? "Nation " + nationId : "—");
+      const teamName = getTeamName(teamId) || (teamId != null ? "Team " + teamId : "—");
+      const leagueName = getLeagueName(leagueId) || (leagueId != null ? "League " + leagueId : "—");
+
+      // Match & Chem
+      const pStats = getPlayerStats(it);
+      const chemStyle = getChemStyleName(it);
+      const injStatus = getInjuryDetails(it);
+
+      // Age / DOB
+      const dobStr = sd.birthdate || it.birthdate || null;
+      const dobFormatted = formatDOB(dobStr);
+      const age = safe(() => it.age) ?? safe(() => sd.age) ?? calcAge(dobStr);
+
+      // Physical & Play
+      const foot = FOOT[sd.preferredFoot ?? safe(() => it.foot)] || "Right";
+      const sm = sd.skillMoves ?? safe(() => it.skillMoves) ?? "?";
+      const wf = sd.weakFoot ?? safe(() => it.weakFoot) ?? "?";
+      const attWr = WORK_RATE[sd.attackWorkRate ?? safe(() => it.attackWorkRate)] || "Med";
+      const defWr = WORK_RATE[sd.defenseWorkRate ?? safe(() => it.defenseWorkRate)] || "Med";
+      const height = sd.height ? sd.height + " cm" : (it.height ? it.height + " cm" : "—");
+      const weight = sd.weight ? sd.weight + " kg" : (it.weight ? it.weight + " kg" : "—");
+      const bodyType = BODY_TYPE[sd.bodyType ?? safe(() => it.bodyType)] || "Average";
+
+      // Face stats
+      const faceRaw = safe(() => it.getAttributes ? it.getAttributes() : null)
+        || safe(() => Array.isArray(it.attributes) ? it.attributes : null) || [];
+      const faceKeys = isGK ? FACE_GK : FACE_OUT;
+      const faceStatsHtml = faceKeys.map((k, i) => {
+        const val = faceRaw[i] != null ? +faceRaw[i] : "—";
+        const cls = typeof val === "number" ? (val >= 90 ? "hi90" : val >= 80 ? "hi80" : val >= 70 ? "mid" : "lo") : "";
+        return `<div class="face-stat ${cls}"><div class="fv">${val}</div><div class="fl">${k}</div></div>`;
+      }).join("");
+
+      // Sub-attributes
+      const subMap = {};
+      (safe(() => it.getSubAttributes()) || []).forEach((s) => {
+        const key = SUB_ATTR[s && s.type];
+        if (key && s.rating > 0) subMap[key] = s.rating;
+      });
+
+      const categories = isGK ? [
+        { name: "Goalkeeping", keys: ["gkdiving", "gkhandling", "gkkicking", "gkreflexes", "gkpositioning"] },
+        { name: "Physicality & Pace", keys: ["acceleration", "sprintspeed", "reactions", "jumping", "strength"] }
+      ] : [
+        { name: "Pace", keys: ["acceleration", "sprintspeed"] },
+        { name: "Shooting", keys: ["positioning", "finishing", "shotpower", "longshots", "volleys", "penalties"] },
+        { name: "Passing", keys: ["vision", "crossing", "fkaccuracy", "shortpassing", "longpassing", "curve"] },
+        { name: "Dribbling", keys: ["agility", "balance", "reactions", "composure", "ballcontrol", "dribbling"] },
+        { name: "Defending", keys: ["interceptions", "heading", "defaware", "standtackle", "slidetackle"] },
+        { name: "Physicality", keys: ["jumping", "stamina", "strength", "aggression"] }
+      ];
+
+      const subCatsHtml = categories.map((cat) => {
+        const rows = cat.keys.map((k) => {
+          const label = SUB_LABELS[k] || k;
+          const val = subMap[k] != null ? subMap[k] : "—";
+          const cls = typeof val === "number" ? (val >= 90 ? "hi90" : val >= 80 ? "hi80" : val >= 70 ? "mid" : "lo") : "";
+          return `<div class="sub-row"><span class="sub-l">${label}</span><span class="sub-v ${cls}">${val}</span></div>`;
+        }).join("");
+        return `<div class="sub-cat"><div class="sub-h">${cat.name}</div><div class="sub-grid">${rows}</div></div>`;
+      }).join("");
+
+      // PlayStyles safely extracted
+      const rawPS = safe(() => (typeof it.getPlayStyles === "function" ? it.getPlayStyles() : it._playStyles)) || [];
+      const psHtml = (Array.isArray(rawPS) ? rawPS : []).map((p) => {
+        const nm = traitName[p && p.traitId] || ("PlayStyle " + (p && p.traitId != null ? p.traitId : ""));
+        const isPlus = !!(p && (p.isIcon || p.isPlus));
+        return `<div class="ps-item ${isPlus ? "plus" : "base"}"><span>${isPlus ? "🌟 " : "🔹 "}${esc(nm)}${isPlus ? " +" : ""}</span></div>`;
+      }).join("") || '<div class="muted" style="font-size:11px">No PlayStyles</div>';
+
+      modal.innerHTML = `
+        <div class="fcevo-modal-dialog">
+          <button class="fcevo-modal-close" id="fcevo-attr-close">&times;</button>
+          <div class="attr-hdr">
+            <div class="attr-ovr">${it.rating ?? "?"}</div>
+            <div class="attr-info">
+              <div class="attr-name">${esc(fullName)} ${isGK ? '<span class="gk">GK</span>' : ""}</div>
+              <div class="attr-meta">
+                <span>${esc(rarity)}</span> ·
+                <span class="trd-badge ${isUntr ? "untr" : "trd"}">${isUntr ? "🔒 UNTRADEABLE" : "💰 TRADEABLE"}</span>
+                ${is1stOwner ? '<span class="trd-badge trd" style="margin-left:2px">1ST OWNER</span>' : ""}
+              </div>
+            </div>
+          </div>
+
+          <div class="attr-sec-title">Positions &amp; Biography</div>
+          <div class="attr-meta-strip full-bio">
+            <div class="mitem"><small>Primary Position</small><b>${mainPosBadge}</b></div>
+            <div class="mitem"><small>Alternate Positions</small><div style="margin-top:2px">${altPosBadges}</div></div>
+            <div class="mitem"><small>Club / Team</small><b>${esc(teamName)}</b></div>
+            <div class="mitem"><small>League</small><b>${esc(leagueName)}</b></div>
+            <div class="mitem"><small>Nation / Country</small><b>${esc(nationName)}</b></div>
+            <div class="mitem"><small>Date of Birth / Age</small><b>${dobFormatted} ${age != null ? `(${age} yrs)` : ""}</b></div>
+          </div>
+
+          <div class="attr-sec-title">Match Statistics &amp; Chemistry</div>
+          <div class="attr-meta-strip full-bio">
+            <div class="mitem"><small>Chemistry Style</small><b>🧪 ${esc(chemStyle)}</b></div>
+            <div class="mitem"><small>Games Played</small><b>🏟️ ${pStats.games} matches</b></div>
+            <div class="mitem"><small>Goals / Assists</small><b>⚽ ${pStats.goals} goals / 🅰️ ${pStats.assists} assists</b></div>
+            <div class="mitem"><small>Cards</small><b>🟨 ${pStats.yellowCards} yellow / 🟥 ${pStats.redCards} red</b></div>
+            <div class="mitem"><small>Injury Details</small><b>${injStatus.includes("Injured") ? "🚑 " + esc(injStatus) : "🟢 Healthy"}</b></div>
+            <div class="mitem"><small>Ownership</small><b>${is1stOwner ? "✨ First Owner" : "💼 Bought / Traded"}</b></div>
+          </div>
+
+          <div class="attr-sec-title">Position Roles (FC 26)</div>
+          <div class="sub-cats-wrapper" style="grid-template-columns:1fr">
+            ${posRolesHtml}
+          </div>
+
+          <div class="attr-sec-title">Physical &amp; Skill Attributes</div>
+          <div class="attr-meta-strip">
+            <div class="mitem"><small>Preferred Foot</small><b>${foot}</b></div>
+            <div class="mitem"><small>Skill Moves</small><b>${sm}★</b></div>
+            <div class="mitem"><small>Weak Foot</small><b>${wf}★</b></div>
+            <div class="mitem"><small>Work Rates (Att / Def)</small><b>${attWr} / ${defWr}</b></div>
+            <div class="mitem"><small>Height / Weight</small><b>${height} / ${weight}</b></div>
+            <div class="mitem"><small>Body Type</small><b>${bodyType}</b></div>
+          </div>
+
+          <div class="attr-sec-title">Face Stats</div>
+          <div class="face-grid">${faceStatsHtml}</div>
+
+          <div class="attr-sec-title">Detailed Sub-Attributes</div>
+          <div class="sub-cats-wrapper">${subCatsHtml}</div>
+
+          <div class="attr-sec-title">PlayStyles</div>
+          <div class="ps-grid">${psHtml}</div>
+        </div>
+      `;
+
+      const closeBtn = modal.querySelector("#fcevo-attr-close");
+      if (closeBtn) closeBtn.onclick = () => modal.classList.remove("open");
+      modal.onclick = (e) => {
+        if (e.target === modal) modal.classList.remove("open");
+      };
+    } catch (err) {
+      console.error("[FCEvo] openAttrModal failed:", err);
+      modal.classList.remove("open");
+    }
+  }
+
   // ---- player results ----
   // Colored PS+/PS usage chips (green=room, red=at cap). Shared by both lists.
   function psChips(it) {
-    const np = numPlus(it), nb = numBasic(it);
-    if (np == null && nb == null) return "";
-    const cp = capPlus(it);
-    const plusFull = (np ?? 0) >= cp, baseFull = (nb ?? 0) >= CAP_BASIC;
-    return `<span class="psc">`
-      + `<span class="pchip ${plusFull ? "full" : "room"}" title="PlayStyle+ used / cap">+${np ?? "?"}/${cp}</span>`
-      + `<span class="pchip ${baseFull ? "full" : "room"}" title="Basic PlayStyles used / cap">${nb ?? "?"}/${CAP_BASIC}</span>`
-      + `</span>`;
+    try {
+      const np = numPlus(it), nb = numBasic(it);
+      if (np == null && nb == null) return "";
+      const cp = capPlus(it) || 4, cb = capBasic(it) || 8;
+      const plusFull = (np ?? 0) >= cp, baseFull = (nb ?? 0) >= cb;
+      return '<span class="psc">'
+        + '<span class="pchip ' + (plusFull ? "full" : "room") + '" title="PlayStyle+ used / cap">+' + (np ?? "?") + '/' + cp + '</span>'
+        + '<span class="pchip ' + (baseFull ? "full" : "room") + '" title="Basic PlayStyles used / cap">' + (nb ?? "?") + '/' + cb + '</span>'
+        + '</span>';
+    } catch (_) { return ""; }
   }
   // Unified club row for BOTH modes: OVR, name, GK, PS+/PS usage chips. Single mode
   // selects the player on click; Auto mode toggles them in the queue on click.
-  const LIST_CAP = 100;
+  const LIST_CAP = 500;
+  let listCapOverride = null;
   function playerRow(it) {
     const auto = state.mode === "auto";
     const row = document.createElement("div");
@@ -1297,26 +1704,71 @@
     const active = auto ? state.queue.some((q) => q.item.id === it.id) : (state.item && state.item.id === it.id);
     row.className = "pr" + (hasEvos ? " hasps" : "") + (active ? " on" : "");
     const gk = isGKItem(it);
+    const isUntr = isUntradeableCard(it);
+    const posInfo = getPlayerPositions(it);
+    const prefPos = posInfo.mainPos || "—";
+    const posBadge = `<span class="pos-chip" title="Preferred Position: ${esc(prefPos)}">${esc(prefPos)}</span>`;
+    const trdBadge = `<span class="trd-badge ${isUntr ? "untr" : "trd"}" title="${isUntr ? "Untradeable card" : "Tradeable card"}">${isUntr ? "UNT" : "TRD"}</span>`;
     row.innerHTML =
       `<span class="ov">${it.rating ?? "?"}</span>`
-      + `<span class="nm">${esc(playerName(it))}${gk ? ' <span class="gk">GK</span>' : ""}</span>`
-      + psChips(it);
-    row.addEventListener("click", () => auto ? toggleQueue(it) : selectPlayer(it));
+      + `<span class="nm">${esc(playerName(it))}${posBadge}${trdBadge}</span>`
+      + psChips(it)
+      + `<button class="view-btn" data-act="view-attrs" title="View all attributes & details">View</button>`;
+    row.addEventListener("click", (e) => {
+      if (e.target.closest("[data-act='view-attrs']")) {
+        e.stopPropagation();
+        openAttrModal(it);
+        return;
+      }
+      auto ? toggleQueue(it) : selectPlayer(it);
+    });
     return row;
   }
   // The one club list, shared by Single (click to pick) and Auto (tick to select).
   function renderList() {
     const box = els.list; if (!box) return; box.innerHTML = "";
-    const all = clubPlayers().filter(pickable);
+    const all = clubPlayers().filter((it) => !!it);
     // While the club is still loading the status line above already says so —
     // don't repeat it here. Only speak up once loaded but nothing is evolvable.
     if (!all.length) { box.innerHTML = clubPlayers().length ? `<div class="rhint">No evolvable players &mdash; all owned or ineligible.</div>` : ``; updateRunBtn(); return; }
-    const matches = (searchQ ? all.filter((it) => playerName(it).toLowerCase().includes(searchQ)) : all)
+    const matches = (searchQ || state.trdFilter !== "all" || state.psFilter !== "all" ? all.filter((it) => {
+      const isUntr = isUntradeableCard(it);
+      if (state.trdFilter === "trd" && isUntr) return false;
+      if (state.trdFilter === "untr" && !isUntr) return false;
+
+      const nP = numPlus(it) ?? 0;
+      const nB = numBasic(it) ?? 0;
+      const totalPS = nP + nB;
+
+      if (state.psFilter === "none" && totalPS > 0) return false;
+      if (state.psFilter === "has" && totalPS === 0) return false;
+
+      if (!searchQ) return true;
+      const pName = playerName(it).toLowerCase();
+      const rName = rarityName(it).toLowerCase();
+      return pName.includes(searchQ) || rName.includes(searchQ);
+    }) : all)
       .sort((a, b) => (b.rating || 0) - (a.rating || 0));
-    if (!matches.length) { box.innerHTML = `<div class="rhint">No player matches &ldquo;${esc(searchQ)}&rdquo;</div>`; updateRunBtn(); return; }
-    matches.slice(0, LIST_CAP).forEach((it) => box.appendChild(playerRow(it)));
-    const extra = matches.length - LIST_CAP;
-    box.insertAdjacentHTML("beforeend", `<div class="rhint">${extra > 0 ? `+${extra} more &mdash; type to filter` : `${matches.length} evolvable`}</div>`);
+    if (!matches.length) { box.innerHTML = `<div class="rhint">No player matches search or trade filter</div>`; updateRunBtn(); return; }
+    
+    const cap = listCapOverride || LIST_CAP;
+    matches.slice(0, cap).forEach((it) => box.appendChild(playerRow(it)));
+    const extra = matches.length - cap;
+    if (extra > 0) {
+      const hint = document.createElement("div");
+      hint.className = "rhint";
+      hint.style.display = "flex";
+      hint.style.alignItems = "center";
+      hint.style.justifyContent = "space-between";
+      hint.innerHTML = `<span>+${extra} more &mdash; type to filter</span> <button class="mini showallbtn" style="padding:2px 7px;cursor:pointer">Show all ${matches.length}</button>`;
+      hint.querySelector(".showallbtn").addEventListener("click", () => {
+        listCapOverride = matches.length + 100;
+        renderList();
+      });
+      box.appendChild(hint);
+    } else {
+      box.insertAdjacentHTML("beforeend", `<div class="rhint">${matches.length} evolvable players</div>`);
+    }
     updateRunBtn();
   }
 
@@ -1439,8 +1891,8 @@
       // 4th-PS+ from a prior evo) can't be applied — the + already covers it. The grid
       // blocks this; Suggest must too, or it preselects an impossible pick.
       if (evo.kind === "PS") { let po = false; try { po = !!it.hasPlusPlayStyle(evoTrait(evo)); } catch (_) {} if (po) { owned++; return; } }
-      if (wantPlus) { if (plusUsed >= CAP_PLUS) { skip.push(name + "+ (no room)"); return; } plusUsed++; }
-      else { if (baseUsed >= CAP_BASIC) { skip.push(name + " (no room)"); return; } baseUsed++; }
+      if (wantPlus) { const cap = capPlus(it); if (plusUsed >= cap) { skip.push(name + "+ (no room)"); return; } plusUsed++; }
+      else { const cap = capBasic(it); if (baseUsed >= cap) { skip.push(name + " (no room)"); return; } baseUsed++; }
       slots.push(evo.s);
     });
     return { slots, owned, skip };
@@ -1870,8 +2322,8 @@ function bindQueueEvents() {
     if (!state.item) { box.style.display = "none"; return; }
     const it = state.item;
     const gk = (() => { try { return it.isGK(); } catch (_) { return false; } })();
-    const nb = numBasic(it), np = numPlus(it), cp = capPlus(it);
-    const basicFull = nb != null && nb >= CAP_BASIC, plusFull = np != null && np >= cp;
+    const nb = numBasic(it), np = numPlus(it), cp = capPlus(it), cb = capBasic(it);
+    const basicFull = nb != null && nb >= cb, plusFull = np != null && np >= cp;
     box.style.display = "";
     box.innerHTML = `
       <div class="card">
@@ -1884,7 +2336,7 @@ function bindQueueEvents() {
       ${statRow(it)}
       <div class="caps">
         <div class="cap ${plusFull ? "full" : ""}"><b>${np ?? "?"}/${cp}</b><small>PS+ used</small></div>
-        <div class="cap ${basicFull ? "full" : ""}"><b>${nb ?? "?"}/${CAP_BASIC}</b><small>Basic used</small></div>
+        <div class="cap ${basicFull ? "full" : ""}"><b>${nb ?? "?"}/${cb}</b><small>Basic used</small></div>
       </div>
       <div class="psrow">${currentPlayStyles(it).map((p) => {
         const nm = traitName[p.traitId] || ("trait " + p.traitId);
@@ -1957,73 +2409,107 @@ function bindQueueEvents() {
     });
   }
 
-  function counterpart(evo) { return ALL.find((x) => x.r === evo.r && x.kind !== evo.kind); }
   function toggleEvo(evo, card) {
-    const on = !state.selected.has(evo.s);
-    if (on) {
-      if (!checkCap(evo)) return;
-      // base & + of the same playstyle are mutually exclusive
-      const cp = counterpart(evo);
-      if (cp && state.selected.has(cp.s)) {
-        state.selected.delete(cp.s);
-        log(`↔ Replaced ${cp.n} with ${evo.n} (same PlayStyle).`, "dim");
+    try {
+      if (!evo || evo.s == null || !state.selected) return;
+      const on = !state.selected.has(evo.s);
+      if (on) {
+        if (!checkCap(evo)) return;
+        // base & + of the same playstyle are mutually exclusive
+        if (Array.isArray(ALL)) {
+          const cp = ALL.find((x) => x && x.r === evo.r && x.kind !== evo.kind);
+          if (cp && state.selected.has(cp.s)) {
+            state.selected.delete(cp.s);
+            log("↔ Replaced " + (cp.n || "") + " with " + (evo.n || "") + " (same PlayStyle).", "dim");
+          }
+        }
+        state.selected.add(evo.s);
+      } else {
+        state.selected.delete(evo.s);
       }
-      state.selected.add(evo.s);
-    } else {
-      state.selected.delete(evo.s);
-    }
-    card.classList.toggle("sel", on);
-    updateCount();
+      if (card && card.classList) card.classList.toggle("sel", on);
+      updateCount();
+    } catch (_) {}
   }
 
-    function checkCap(evo) {
+  function checkCap(evo) {
     if (!state.item) return true;
     const it = state.item;
-    if (evo.kind === "PS+") {
-      const used = numPlus(it) ?? 0;
-      const selPlusAll = [...state.selected].filter((s) => { const e = byId(s); return e && e.kind === "PS+"; }).length;
-      if (evo.gh) {
-        // GH reward = the 4th slot (cap 4 on Glory Hunters cards).
-        const cap = capPlus(it);
-        if (used + selPlusAll >= cap) { log(`✋ 4th PS+ cap: player has ${used}/${cap} PS+, ${selPlusAll} queued. No room.`, "warn"); return false; }
+    try {
+      const kind = evo.kind || getEvoKind(evo.s);
+      if (kind === "PS+") {
+        const used = numPlus(it) ?? 0;
+        const cap = capPlus(it) || 4;
+        let selPlusAll = 0;
+        state.selected.forEach((s) => { if (getEvoKind(s) === "PS+") selPlusAll++; });
+        if (used + selPlusAll >= cap) {
+          log("✋ PS+ cap: player has " + used + "/" + cap + " PS+, " + selPlusAll + " queued. No room.", "info");
+          return false;
+        }
       } else {
-        // Repeatable PS+ never goes past 3 — the 4th can only come from a GH reward.
-        const selRepeat = [...state.selected].filter((s) => { const e = byId(s); return e && e.kind === "PS+" && !e.gh; }).length;
-        if (used + selRepeat >= CAP_PLUS) { log(`✋ PS+ cap: player has ${used}/${CAP_PLUS}, ${selRepeat} queued. No room.`, "warn"); return false; }
+        const used = numBasic(it) ?? 0;
+        const cap = capBasic(it) || 8;
+        let selB = 0;
+        state.selected.forEach((s) => { if (getEvoKind(s) === "PS") selB++; });
+        if (used + selB >= cap) {
+          log("✋ Basic cap: player has " + used + "/" + cap + " basic, " + selB + " queued. No room.", "info");
+          return false;
+        }
       }
-    } else {
-      const used = numBasic(it) ?? 0;
-      const selB = [...state.selected].filter((s) => { const e = byId(s); return e && e.kind === "PS"; }).length;
-      if (used + selB >= CAP_BASIC) { log(`✋ Basic cap: player has ${used}/${CAP_BASIC}, ${selB} queued. No room.`, "warn"); return false; }
-    }
+    } catch (_) {}
     return true;
   }
 
   function updateCount() {
-    const selPlus = [...state.selected].filter((s) => byId(s) && byId(s).kind === "PS+").length;
-    const selB = state.selected.size - selPlus;
-    let txt = `${state.selected.size} selected (${selPlus} PS+, ${selB} PS)`;
-    let over = false;
-    if (state.item) {
-      // Project where the player lands once the queued batch is applied, so the
-      // caps are visible before hitting Apply.
-      const cp = capPlus(state.item);
-      const pp = (numPlus(state.item) ?? 0) + selPlus, pb = (numBasic(state.item) ?? 0) + selB;
-      txt += ` → ${pp}/${cp} PS+, ${pb}/${CAP_BASIC} basic`;
-      over = pp > cp || pb > CAP_BASIC;
-    }
-    els.count.textContent = txt;
-    els.count.classList.toggle("over", over);
+    try {
+      if (!els || !els.count) return;
+      let selPlus = 0, selB = 0;
+      state.selected.forEach((s) => {
+        if (getEvoKind(s) === "PS+") selPlus++;
+        else selB++;
+      });
+      let txt = state.selected.size + " selected (" + selPlus + " PS+, " + selB + " PS)";
+      let over = false;
+      if (state.item) {
+        const cp = capPlus(state.item) || 4;
+        const cb = capBasic(state.item) || 8;
+        const np = numPlus(state.item) ?? 0;
+        const nb = numBasic(state.item) ?? 0;
+        const pp = np + selPlus;
+        const pb = nb + selB;
+        txt += " \u2192 " + pp + "/" + cp + " PS+, " + pb + "/" + cb + " basic";
+        over = pp > cp || pb > cb;
+      }
+      if (els && els.count) {
+        els.count.textContent = txt;
+        if (els.count.classList) {
+          els.count.classList.toggle("over", !!over);
+        }
+      }
+    } catch (_) {}
   }
 
-  function setRunning(on) { els.run.disabled = on; els.stop.style.display = on ? "" : "none"; els.run.style.display = on ? "none" : ""; if (els.clearsel) els.clearsel.style.display = (on || state.mode !== "auto") ? "none" : ""; }
+  function setRunning(on) {
+    try {
+      if (!els) return;
+      if (els.run) els.run.disabled = on;
+      if (els.stop) els.stop.style.display = on ? "" : "none";
+      if (els.run) els.run.style.display = on ? "none" : "";
+      if (els.clearsel) els.clearsel.style.display = (on || state.mode !== "auto") ? "none" : "";
+    } catch (_) {}
+  }
 
   // Latest message shows in the status line (full history goes to the console).
   // Strip any leading status glyph/emoji — state is conveyed by colour, not icons.
-  const deglyph = (s) => String(s).replace(/^(?:\p{Extended_Pictographic}|[\u2190-\u21FF\u2300-\u27FF\u2900-\u29FF\u2B00-\u2BFF\uFE0F\u200D])+\s*/u, "");
+  const deglyph = (s) => {
+    try { return String(s).replace(/^(?:\p{Extended_Pictographic}|[\u2190-\u21FF\u2300-\u27FF\u2900-\u29FF\u2B00-\u2BFF\uFE0F\u200D])+\s*/u, ""); }
+    catch (_) { return String(s).replace(/^[^\w\s]+\s*/, ""); }
+  };
   function log(msg, cls) {
     const shown = deglyph(msg);
-    if (els.status) { els.status.textContent = shown; els.status.className = "status " + (cls || ""); }
+    try {
+      if (els && els.status) { els.status.textContent = shown; els.status.className = "status " + (cls || ""); }
+    } catch (_) {}
     (cls === "err" ? console.error : cls === "warn" ? console.warn : console.log)("[FCEvo]", msg);
   }
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -2087,7 +2573,7 @@ function bindQueueEvents() {
       if (ACAD() && CLUB()) {
         clearInterval(iv);
         if (!document.getElementById("fcevo")) build();
-        window.FCEvo = { applyEvo, claimEvo, removeEvoUpgrade, removeLastEvo, canRemoveEvo, runBatch, runDispatch, state, PS, PSP, clubPlayers, selectPlayer, scrapeRarities, clubRaritiesDump, eligibleRarities, loadClub, startClubLoad, readAttrs, dumpEntity, openEntity, freshItemById, reloadAndReselect, setMode, autoResolveRole, suggestedSlots, toggleQueue, clearQueue, requestRun };
+        window.FCEvo = { applyEvo, claimEvo, removeEvoUpgrade, removeLastEvo, canRemoveEvo, runBatch, runDispatch, state, PS, PSP, RARITIES, clubPlayers, selectPlayer, scrapeRarities, clubRaritiesDump, eligibleRarities, loadClub, startClubLoad, readAttrs, dumpEntity, openEntity, freshItemById, reloadAndReselect, setMode, autoResolveRole, suggestedSlots, toggleQueue, clearQueue, requestRun };
         // Wait until the active squad is loaded (app ready for club searches), then
         // load the club. Hard fallback at 15s so it can't hang; retries cover the rest.
         setClubStatus("Club: waiting for squad…", "load");

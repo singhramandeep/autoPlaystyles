@@ -32,9 +32,13 @@ function detectState() {
 }
 
 function report(state) {
-  chrome.runtime.sendMessage({ type: "FCEVO_STATUS", ...state }).catch(() => {
-    // Extension context may have been invalidated (e.g. reload). Ignore.
-  });
+  try {
+    if (typeof chrome === "undefined" || !chrome.runtime || !chrome.runtime.id) return;
+    const p = chrome.runtime.sendMessage({ type: "FCEVO_STATUS", ...state });
+    if (p && typeof p.catch === "function") {
+      p.catch(() => {});
+    }
+  } catch (_) {}
 }
 
 function tick() {

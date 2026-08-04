@@ -27,6 +27,7 @@ function setStatus(state) {
   const panel  = EL("info-panel");
   const script = EL("info-script");
   const ts     = EL("info-ts");
+  const players = EL("info-players");
   const tip    = EL("tip-box");
 
   // Remove all state classes, add the new one.
@@ -45,11 +46,13 @@ function setStatus(state) {
     script.textContent = "Not injected";
     script.className   = "info-val warn";
     ts.textContent     = "—";
+    players.textContent = "—";
+    players.className   = "info-val";
     tip.innerHTML = "<b>Open the EA web app</b> and navigate to the Evolutions (Academy) hub — the floating panel will appear automatically.";
     return;
   }
 
-  const { panelFound, panelVisible, onEAPage, url, ts: stamp } = state;
+  const { panelFound, panelVisible, onEAPage, url, ts: stamp, playerCount } = state;
 
   // Page row
   page.textContent = onEAPage ? "EA FC 26 Web App ✓" : (url ? new URL(url).hostname : "Unknown");
@@ -74,6 +77,18 @@ function setStatus(state) {
   // Timestamp
   ts.textContent = timeAgo(stamp);
   ts.className   = "info-val";
+
+  // Players count
+  if (panelFound && state.playerCount != null) {
+    players.textContent = state.playerCount + " players";
+    players.className   = "info-val ok";
+  } else if (panelFound) {
+    players.textContent = "Loading…";
+    players.className   = "info-val warn";
+  } else {
+    players.textContent = "—";
+    players.className   = "info-val";
+  }
 
   // Overall card state
   if (panelFound) {
@@ -111,6 +126,7 @@ async function liveCheck(tabId) {
         onEAPage:     /ultimate-team\/web-app/.test(window.location.href),
         url:          window.location.href,
         ts:           Date.now(),
+        playerCount:  (() => { try { const p = window.FCEvo && window.FCEvo.clubPlayers && window.FCEvo.clubPlayers(); return Array.isArray(p) ? p.length : null; } catch (_) { return null; } })(),
       }),
     });
     return results && results[0] && results[0].result;
@@ -153,7 +169,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // Show extension version from manifest.
   try {
     const v = chrome.runtime.getManifest().version;
-    if (v) EL("ext-version").textContent = "v" + v;
+    if (v) EL("ext-version").textContent = "v" + v + " · FUTTIES";
   } catch (_) {}
 
   refresh();
