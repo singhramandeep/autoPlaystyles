@@ -194,6 +194,7 @@
     running: false, abort: false,
     rarities: new Set(), // allowed rareflags for club search; empty = all
     trdFilter: "all", // "all" | "trd" (tradeable) | "untr" (untradeable)
+    psFilter: "all", // "all" | "none" (0 PS) | "has" (has PS)
     clubItems: null, // players we loaded ourselves (full club / eligible rarities)
   };
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -503,6 +504,9 @@
     };
     // First page alone so an app-not-ready failure propagates to the retry wrapper.
     let done = add(await fetchPage(0)) < PAGE;
+    state.clubItems = all.slice();
+    renderList();
+
     let offset = PAGE, guard = 0;
     while (!done && guard++ < 40) {
       const offsets = [];
@@ -516,6 +520,7 @@
       }
       state.clubItems = all.slice();
       setClubStatus("Club: loading… " + all.length + " players", "load");
+      renderList();
       if (!done) await sleep(80);
     }
     state.clubItems = all;
@@ -604,8 +609,28 @@
     }
     state.running = false; setRunning(false);
   }
+  function cleanNameStr(str) {
+    if (!str || typeof str !== "string") return "";
+    const s = str.trim();
+    if (s === "---" || s.toLowerCase() === "null" || s.toLowerCase() === "undefined") return "";
+    return s;
+  }
+  function getPlayerNameParts(it) {
+    if (!it) return { commonName: "", firstName: "", lastName: "", name: "" };
+    let sd = {};
+    try { sd = (it.getStaticData ? it.getStaticData() : it._staticData) || {}; } catch (_) {}
+    const cn = cleanNameStr(sd.commonName || sd.cname || sd.knownAs || it.commonName || it._commonName || (typeof it.getCommonName === "function" ? it.getCommonName() : ""));
+    const fn = cleanNameStr(sd.firstName || sd.fname || it.firstName || it._firstName || (typeof it.getFirstName === "function" ? it.getFirstName() : ""));
+    const ln = cleanNameStr(sd.lastName || sd.lname || it.lastName || it._lastName || (typeof it.getLastName === "function" ? it.getLastName() : ""));
+    const rawName = cleanNameStr(sd.name || it.name || it._name);
+    return { commonName: cn, firstName: fn, lastName: ln, name: rawName };
+  }
   function playerName(it) {
-    try { const sd = it.getStaticData ? it.getStaticData() : it._staticData; if (sd && sd.name) return sd.name; } catch (_) {}
+    const { commonName, firstName, lastName, name } = getPlayerNameParts(it);
+    if (commonName) return commonName;
+    const full = [firstName, lastName].filter(Boolean).join(" ");
+    if (full) return full;
+    if (name) return name;
     return "Player";
   }
   function rarityName(it) {
@@ -1056,7 +1081,7 @@
     const root = document.createElement("div");
     root.id = "fcevo";
     root.innerHTML = `
-      <header><b class="wm">Evo&nbsp;Helper <span style="font-size:9px;background:linear-gradient(135deg,#ec4899,#8b5cf6);color:#fff;padding:1px 5px;border-radius:4px;vertical-align:middle;margin-left:4px;font-weight:700;box-shadow:0 0 6px rgba(236,72,153,0.5);">v2.2.0</span></b><i class="dia" aria-hidden="true"></i><a class="upd" id="fcevo-upd" href="${INSTALL_URL}" target="_blank" rel="noopener noreferrer" title="New version available — click to update" style="display:none">⬆ update</a><span class="sp"></span><button data-act="settings" class="hbtn" title="Settings">⚙</button><button data-act="min" title="Collapse"><svg class="chev" viewBox="0 0 14 9" width="12" height="8" aria-hidden="true"><path d="M1 6.5L7 1.5L13 6.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button data-act="close" class="xbtn" title="Close (until page reload)">✕</button></header>
+      <header><b class="wm">Evo&nbsp;Helper <span style="font-size:9px;background:linear-gradient(135deg,#ec4899,#8b5cf6);color:#fff;padding:1px 5px;border-radius:4px;vertical-align:middle;margin-left:4px;font-weight:700;box-shadow:0 0 6px rgba(236,72,153,0.5);">v2.2.1</span></b><i class="dia" aria-hidden="true"></i><a class="upd" id="fcevo-upd" href="${INSTALL_URL}" target="_blank" rel="noopener noreferrer" title="New version available — click to update" style="display:none">⬆ update</a><span class="sp"></span><button data-act="settings" class="hbtn" title="Settings">⚙</button><button data-act="min" title="Collapse"><svg class="chev" viewBox="0 0 14 9" width="12" height="8" aria-hidden="true"><path d="M1 6.5L7 1.5L13 6.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button data-act="close" class="xbtn" title="Close (until page reload)">✕</button></header>
       <div class="notice-overlay" id="fcevo-notice" data-act="notice-hide" style="display:none"><div class="notice-card"><div class="notice-title" id="fcevo-notice-title"></div><div class="notice-body" id="fcevo-notice-body"></div><a class="notice-link" id="fcevo-notice-link" target="_blank" rel="noopener noreferrer" style="display:none"></a><button class="notice-x" data-act="notice-hide">Got it</button></div></div>
       <div class="setpanel" id="fcevo-settings" style="display:none">
         <label title="Add the player to each slot, then claim/finish it so the PlayStyle is locked in."><input type="checkbox" id="fcevo-claim" checked> claim &amp; finish</label>
@@ -1204,6 +1229,8 @@
     if (ELIGIBLE_RARITIES.length) log("Search limited to " + ELIGIBLE_RARITIES.length + " eligible rarities (adjust via Rarity ▾).", "dim");
     checkUpdate();
     checkNotice();
+    renderList();
+    startClubLoad(1);
     try { new Image().src = METRICS_URL + "?p=/evo/load&t=" + encodeURIComponent("Evo Helper"); } catch (_) {} // anonymous cookieless load ping, best-effort
   }
 
@@ -1427,6 +1454,73 @@
       return Math.abs(ageDate.getUTCFullYear() - 1970);
     } catch (_) { return null; }
   }
+  function formatDOB(dob) {
+    if (!dob) return "—";
+    try {
+      const d = typeof dob === "number" && dob < 1e10 ? new Date(dob * 1000) : new Date(dob);
+      if (isNaN(d)) return "—";
+      return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+    } catch (_) { return "—"; }
+  }
+  const POS_LABEL = {
+     0:"GK", 1:"CB", 2:"RB", 3:"LB", 4:"SW", 5:"CB", 6:"CB",
+     7:"RWB",8:"LWB",9:"CDM",10:"CDM",11:"CDM",12:"RM",13:"CM",
+    14:"CM",15:"CM",16:"LM",17:"CAM",18:"CAM",19:"CAM",20:"RW",
+    21:"ST",22:"LW",23:"RW",24:"CF",25:"ST",26:"ST",27:"LW",
+  };
+  function getPlayerPositions(it) {
+    if (!it) return { mainPos: "—", alts: [], all: [] };
+    const mainId = it.preferredPosition;
+    const mainPos = POS_LABEL[mainId] || "—";
+    let altIds = null;
+    try { if (Array.isArray(it.possiblePositions)) altIds = it.possiblePositions; } catch (_) {}
+    if (!altIds) { try { altIds = it.getBasePossiblePositions(); } catch (_) {} }
+    altIds = altIds || [];
+    const alts = altIds.filter((id) => id !== mainId).map((id) => POS_LABEL[id] || String(id));
+    const all = [...new Set([mainPos, ...alts])];
+    return { mainPos, alts, all };
+  }
+  function getNationName(id) {
+    if (id == null) return null;
+    try {
+      if (window.repositories && window.repositories.Item && window.repositories.Item.getNation) {
+        const n = window.repositories.Item.getNation(id);
+        if (n && n.name) return n.name;
+      }
+    } catch (_) {}
+    return null;
+  }
+  function getTeamName(id) {
+    if (id == null) return null;
+    try {
+      if (window.repositories && window.repositories.Item && window.repositories.Item.getTeam) {
+        const t = window.repositories.Item.getTeam(id);
+        if (t && t.name) return t.name;
+      }
+    } catch (_) {}
+    return null;
+  }
+  function getLeagueName(id) {
+    if (id == null) return null;
+    try {
+      if (window.repositories && window.repositories.Item && window.repositories.Item.getLeague) {
+        const l = window.repositories.Item.getLeague(id);
+        if (l && l.name) return l.name;
+      }
+    } catch (_) {}
+    return null;
+  }
+  const ROLE_NAMES_BY_POS = {
+    "ST": ["Advanced Forward", "Target Forward", "Poacher", "False 9"],
+    "RW / LW": ["Inside Forward", "Winger", "Wide Playmaker"],
+    "CAM": ["Shadow Striker", "Playmaker", "Classic 10", "Half Winger"],
+    "CM": ["Box to Box", "Playmaker", "Deep Lying Playmaker", "Holding", "Half Winger"],
+    "RM / LM": ["Inside Forward", "Winger", "Wide Playmaker", "Wide Midfielder"],
+    "CDM": ["Holding", "Deep Lying Playmaker", "Box Crasher", "Centre Half", "Wide Half"],
+    "RB / LB": ["Fullback", "Wingback", "Falseback", "Inverted Wingback", "Attacking Wingback"],
+    "CB": ["Defender", "Stopper", "Wide Back", "Ball Playing Defender"],
+    "GK": ["Goalkeeper", "Ball Playing", "Sweeper Keeper"]
+  };
 
   function isUntradeableCard(it) {
     if (!it) return false;
@@ -1481,20 +1575,17 @@
     const out = [];
     (posList || []).forEach((posName) => {
       const group = POS_GROUP_NAME[posName] || posName;
-      const roles = ROLES[group] || ROLES[posName];
+      const roles = ROLE_NAMES_BY_POS[group] || ROLE_NAMES_BY_POS[posName];
       if (roles) out.push({ pos: posName, roles });
     });
     return out;
   }
   function getPlayerFullName(it) {
     if (!it) return "Unknown";
-    const sd = (it.getStaticData ? it.getStaticData() : it._staticData) || {};
-    const fn = sd.firstName || "";
-    const ln = sd.lastName || "";
-    const cn = sd.commonName || "";
-    if (cn) return cn + (fn || ln ? ` (${[fn, ln].filter(Boolean).join(" ")})` : "");
-    const full = [fn, ln].filter(Boolean).join(" ");
-    return full || playerName(it);
+    const { commonName, firstName, lastName, name } = getPlayerNameParts(it);
+    const full = [firstName, lastName].filter(Boolean).join(" ");
+    if (commonName) return commonName + (full ? ` (${full})` : "");
+    return full || name || playerName(it);
   }
 
   function openAttrModal(it) {
@@ -1744,9 +1835,18 @@
       if (state.psFilter === "has" && totalPS === 0) return false;
 
       if (!searchQ) return true;
+      const { commonName, firstName, lastName, name } = getPlayerNameParts(it);
       const pName = playerName(it).toLowerCase();
+      const fName = getPlayerFullName(it).toLowerCase();
       const rName = rarityName(it).toLowerCase();
-      return pName.includes(searchQ) || rName.includes(searchQ);
+      const q = searchQ.toLowerCase();
+      return pName.includes(q) ||
+             fName.includes(q) ||
+             rName.includes(q) ||
+             (commonName && commonName.toLowerCase().includes(q)) ||
+             (firstName && firstName.toLowerCase().includes(q)) ||
+             (lastName && lastName.toLowerCase().includes(q)) ||
+             (name && name.toLowerCase().includes(q));
     }) : all)
       .sort((a, b) => (b.rating || 0) - (a.rating || 0));
     if (!matches.length) { box.innerHTML = `<div class="rhint">No player matches search or trade filter</div>`; updateRunBtn(); return; }

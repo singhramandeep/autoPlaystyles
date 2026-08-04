@@ -160,12 +160,12 @@
     function extractPlayer(it, traitMap) {
       const isGK = safe(() => !!it.isGK());
       const sd   = safe(() => it.getStaticData ? it.getStaticData() : it._staticData) || {};
-      const name = sd.name || sd.commonName || safe(() => it.name)
-        || [sd.firstName, sd.lastName].filter(Boolean).join(" ") || "Unknown";
-
-      const fn = sd.firstName || "";
-      const ln = sd.lastName || "";
-      const cn = sd.commonName || "";
+      const clean = (s) => (s && typeof s === "string" && s.trim() !== "---" && s.trim().toLowerCase() !== "null" ? s.trim() : "");
+      const cn = clean(sd.commonName || sd.cname || sd.knownAs || it.commonName || it._commonName || safe(() => typeof it.getCommonName === "function" ? it.getCommonName() : ""));
+      const fn = clean(sd.firstName || sd.fname || it.firstName || it._firstName || safe(() => typeof it.getFirstName === "function" ? it.getFirstName() : ""));
+      const ln = clean(sd.lastName || sd.lname || it.lastName || it._lastName || safe(() => typeof it.getLastName === "function" ? it.getLastName() : ""));
+      const rawName = clean(sd.name || safe(() => it.name) || it._name);
+      const name = cn || [fn, ln].filter(Boolean).join(" ") || rawName || "Unknown";
       const fullName = cn ? `${cn} (${[fn, ln].filter(Boolean).join(" ")})`.trim() : ([fn, ln].filter(Boolean).join(" ") || name);
 
       const birthdate = sd.birthdate ?? safe(() => it.birthdate) ?? null;
