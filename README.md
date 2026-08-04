@@ -26,7 +26,16 @@
 
 ## What It Does
 
+<img width="624" height="679" alt="image" src="https://github.com/user-attachments/assets/9c797ea8-b4dd-45e0-945e-4581e3a5e822" />
+<img width="320" height="319" alt="image" src="https://github.com/user-attachments/assets/651f2f2a-415c-4daa-869b-c1285d7d623f" />
+<img width="322" height="317" alt="image" src="https://github.com/user-attachments/assets/b099b5e7-34b4-4386-bcc8-b5d83bbe6d82" />
+<img width="322" height="815" alt="image" src="https://github.com/user-attachments/assets/41c34802-bb09-48d3-a16a-1cfb8b5e873c" />
+<img width="460" height="834" alt="image" src="https://github.com/user-attachments/assets/0ec76faa-12ab-4633-bd01-02d677d60039" />
+
+
+
 This Chrome Extension injects a **floating control panel** into the EA FC 26 web app that lets you:
+
 
 - 🎯 **Select any player** from your club by name search or rarity filter
 - ✨ **Auto-suggest** the best PlayStyles for a chosen position + role (e.g. ST → Advanced Forward)
