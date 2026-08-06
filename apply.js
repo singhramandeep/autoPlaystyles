@@ -540,6 +540,7 @@
       if (!n) throw new Error("0 players returned");
       setClubStatus("Club: " + n + " players loaded" + (rarities ? " (eligible)" : "") + " · click to reload", "ok");
       clubLoading = false;
+      ensureItemDefinitionsLoaded(state.clubItems).then(() => { try { renderList(); } catch (_) {} });
     } catch (e) {
       clubLoading = false;
       if (attempt < 8) {
@@ -609,28 +610,268 @@
     }
     state.running = false; setRunning(false);
   }
-  function cleanNameStr(str) {
-    if (!str || typeof str !== "string") return "";
-    const s = str.trim();
-    if (s === "---" || s.toLowerCase() === "null" || s.toLowerCase() === "undefined") return "";
-    return s;
+  function pickStr(...args) {
+    const loc = window.glocalization || (window.services && window.services.Localization) || (window.repositories && window.repositories.Localization);
+    const isInvalid = (s) => {
+      if (!s || typeof s !== "string") return true;
+      const str = s.trim();
+      if (!str || str === "---" || str.toLowerCase() === "null" || str.toLowerCase() === "undefined" || str.toLowerCase() === "player") return true;
+      const low = str.toLowerCase();
+      if (low.startsWith("player_name_") || low.startsWith("item_name_") || low.startsWith("card_name_") || low.startsWith("name_") || low.startsWith("pname_") || low.startsWith("missing key") || low.startsWith("key_not_found")) return true;
+      return false;
+    };
+    for (let i = 0; i < args.length; i++) {
+      let val = args[i];
+      if (val == null) continue;
+      if (typeof val === "function") {
+        try { val = val(); } catch (_) { continue; }
+      }
+      if (typeof val === "number" && loc && typeof loc.getText === "function") {
+        try {
+          const lVal = loc.getText(val);
+          if (!isInvalid(lVal)) return lVal.trim();
+        } catch (_) {}
+      }
+      if (typeof val === "string") {
+        if (!isInvalid(val)) return val.trim();
+        if (/^\d+$/.test(val.trim()) && loc && typeof loc.getText === "function") {
+          try {
+            const lVal = loc.getText(val.trim());
+            if (!isInvalid(lVal)) return lVal.trim();
+          } catch (_) {}
+        }
+      }
+    }
+    return "";
   }
+  const _nameCache = new Map();
+  let _loadingDefIds = new Set();
+
+  async function ensureItemDefinitionsLoaded(items) {
+    if (!Array.isArray(items) || !items.length) return;
+    const missingDefIds = new Set();
+
+    for (const it of items) {
+      if (!it) continue;
+      const { commonName, firstName, lastName, name } = getPlayerNameParts(it);
+      if (!commonName && !firstName && !lastName && !name) {
+        const rawId = it.definitionId ?? it._definitionId ?? it.assetId ?? it._assetId ?? it.id;
+        if (rawId != null) {
+          const num = Number(rawId);
+          const baseId = (!isNaN(num) && num > 16777215) ? (num & 0xFFFFFF) : num;
+          if (baseId > 0 && !_nameCache.has(baseId) && !_loadingDefIds.has(baseId)) {
+            missingDefIds.add(baseId);
+          }
+        }
+      }
+    }
+
+    if (!missingDefIds.size) return;
+    const missingArr = Array.from(missingDefIds);
+    missingArr.forEach((id) => _loadingDefIds.add(id));
+
+    const S = window.services, R = window.repositories;
+
+    try {
+      const reqFn = (S && S.Item && typeof S.Item.requestItemDefinitions === "function" && S.Item.requestItemDefinitions.bind(S.Item))
+        || (S && S.ItemDefinition && typeof S.ItemDefinition.requestItemDefinitions === "function" && S.ItemDefinition.requestItemDefinitions.bind(S.ItemDefinition))
+        || (R && R.ItemDefinition && typeof R.ItemDefinition.fetch === "function" && R.ItemDefinition.fetch.bind(R.ItemDefinition));
+
+      if (reqFn) {
+        for (let i = 0; i < missingArr.length; i += 40) {
+          const batch = missingArr.slice(i, i + 40);
+          try {
+            await reqFn(batch);
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+
+    const remaining = missingArr.filter((id) => {
+      const loc = window.glocalization || (S && S.Localization) || (R && R.Localization);
+      const locName = loc && typeof loc.getText === "function" ? loc.getText("player_name_" + id) : "";
+      const repoDef = R?.ItemDefinition?.get?.(id) || S?.ItemDefinition?.get?.(id);
+      return (!locName || locName.startsWith("player_name_")) && !repoDef?.commonName && !repoDef?.name;
+    });
+
+    if (remaining.length) {
+      await Promise.all(remaining.slice(0, 30).map(async (id) => {
+        try {
+          const res = await fetch(`https://futdb.app/api/players/${id}`, {
+            headers: { "Accept": "application/json" }
+          }).catch(() => null);
+          if (res && res.ok) {
+            const data = await res.json();
+            const pName = data?.player?.common_name || data?.player?.name || data?.player?.last_name || data?.name;
+            if (pName) _nameCache.set(id, pName);
+          }
+        } catch (_) {}
+      }));
+    }
+
+    missingArr.forEach((id) => _loadingDefIds.delete(id));
+  }
+
   function getPlayerNameParts(it) {
     if (!it) return { commonName: "", firstName: "", lastName: "", name: "" };
+
     let sd = {};
-    try { sd = (it.getStaticData ? it.getStaticData() : it._staticData) || {}; } catch (_) {}
-    const cn = cleanNameStr(sd.commonName || sd.cname || sd.knownAs || it.commonName || it._commonName || (typeof it.getCommonName === "function" ? it.getCommonName() : ""));
-    const fn = cleanNameStr(sd.firstName || sd.fname || it.firstName || it._firstName || (typeof it.getFirstName === "function" ? it.getFirstName() : ""));
-    const ln = cleanNameStr(sd.lastName || sd.lname || it.lastName || it._lastName || (typeof it.getLastName === "function" ? it.getLastName() : ""));
-    const rawName = cleanNameStr(sd.name || it.name || it._name);
-    return { commonName: cn, firstName: fn, lastName: ln, name: rawName };
+    try {
+      if (typeof it.getStaticData === "function") {
+        sd = it.getStaticData() || {};
+      }
+    } catch (_) {}
+    if (!sd || !Object.keys(sd).length) {
+      sd = it._staticData || it.staticData || {};
+    }
+
+    const itemDef = it._itemDefinition || it.itemDefinition || sd._itemDefinition || sd.itemDefinition || it._definition || it.definition || {};
+    const playerInfo = it._playerInfo || it.playerInfo || it._playerData || it.playerData || {};
+
+    const rawDefIds = [
+      it.definitionId, it._definitionId,
+      it.assetId, it._assetId,
+      it.baseId, it._baseId,
+      it.conceptId, it._conceptId,
+      it.resourceId, it._resourceId,
+      sd.definitionId, sd._definitionId,
+      sd.assetId, sd._assetId,
+      sd.baseId, sd._baseId,
+      sd.conceptId, sd._conceptId,
+      sd.resourceId, sd._resourceId,
+      itemDef.definitionId, itemDef._definitionId,
+      itemDef.assetId, itemDef._assetId,
+      itemDef.baseId, itemDef._baseId,
+      itemDef.conceptId, itemDef._conceptId,
+      playerInfo.definitionId, playerInfo._definitionId,
+      playerInfo.assetId, playerInfo._assetId,
+      playerInfo.baseId, playerInfo._baseId,
+      typeof it.getDefinitionId === "function" ? (() => { try { return it.getDefinitionId(); } catch (_) {} })() : null,
+      typeof it.getAssetId === "function" ? (() => { try { return it.getAssetId(); } catch (_) {} })() : null,
+      typeof it.getBaseId === "function" ? (() => { try { return it.getBaseId(); } catch (_) {} })() : null,
+      it.id
+    ].filter((id) => id != null && id !== 0);
+
+    const candidateDefIds = [];
+    const seenDefIds = new Set();
+    const addDefId = (id) => {
+      if (id == null || id === 0) return;
+      const num = Number(id);
+      if (!isNaN(num) && num > 0 && !seenDefIds.has(num)) {
+        seenDefIds.add(num);
+        candidateDefIds.push(num);
+      }
+    };
+
+    for (const raw of rawDefIds) {
+      const num = Number(raw);
+      if (!isNaN(num) && num > 0) {
+        if (num > 16777215) {
+          addDefId(num & 0xFFFFFF);
+        }
+        addDefId(num);
+      }
+    }
+
+    let repoDef = null;
+    for (const defId of candidateDefIds) {
+      try {
+        if (window.repositories && window.repositories.ItemDefinition && typeof window.repositories.ItemDefinition.get === "function") {
+          repoDef = window.repositories.ItemDefinition.get(defId);
+        }
+        if (!repoDef && window.services && window.services.ItemDefinition && typeof window.services.ItemDefinition.get === "function") {
+          repoDef = window.services.ItemDefinition.get(defId);
+        }
+        if (!repoDef && window.repositories && window.repositories.Player && typeof window.repositories.Player.get === "function") {
+          repoDef = window.repositories.Player.get(defId);
+        }
+        if (repoDef) break;
+      } catch (_) {}
+    }
+
+    const cn = pickStr(
+      sd.commonName, sd._commonName, sd.cname, sd._cname, sd.knownAs, sd._knownAs, sd.commonNameId, sd._commonNameId,
+      itemDef.commonName, itemDef._commonName, itemDef.cname, itemDef._cname, itemDef.knownAs, itemDef._knownAs, itemDef.commonNameId, itemDef._commonNameId,
+      playerInfo.commonName, playerInfo._commonName, playerInfo.cname, playerInfo.knownAs,
+      repoDef?.commonName, repoDef?._commonName, repoDef?.cname, repoDef?.knownAs, repoDef?.commonNameId,
+      it.commonName, it._commonName, it.cname, it._cname, it.knownAs, it._knownAs,
+      typeof it.getCommonName === "function" ? () => it.getCommonName() : null
+    );
+
+    const fn = pickStr(
+      sd.firstName, sd._firstName, sd.fname, sd._fname, sd.firstNameId, sd._firstNameId,
+      itemDef.firstName, itemDef._firstName, itemDef.fname, itemDef._fname, itemDef.firstNameId, itemDef._firstNameId,
+      playerInfo.firstName, playerInfo._firstName, playerInfo.fname,
+      repoDef?.firstName, repoDef?._firstName, repoDef?.fname, repoDef?.firstNameId,
+      it.firstName, it._firstName, it.fname, it._fname,
+      typeof it.getFirstName === "function" ? () => it.getFirstName() : null
+    );
+
+    const ln = pickStr(
+      sd.lastName, sd._lastName, sd.lname, sd._lname, sd.lastNameId, sd._lastNameId,
+      itemDef.lastName, itemDef._lastName, itemDef.lname, itemDef._lname, itemDef.lastNameId, itemDef._lastNameId,
+      playerInfo.lastName, playerInfo._lastName, playerInfo.lname,
+      repoDef?.lastName, repoDef?._lastName, repoDef?.lname, repoDef?.lastNameId,
+      it.lastName, it._lastName, it.lname, it._lname,
+      typeof it.getLastName === "function" ? () => it.getLastName() : null
+    );
+
+    const rawName = pickStr(
+      sd.name, sd._name, sd.nameId, sd._nameId, sd.shortName, sd._shortName, sd.displayName, sd._displayName,
+      itemDef.name, itemDef._name, itemDef.nameId, itemDef._nameId, itemDef.shortName, itemDef._shortName,
+      playerInfo.name, playerInfo._name, playerInfo.shortName,
+      repoDef?.name, repoDef?._name, repoDef?.nameId, repoDef?.shortName,
+      it.name, it._name, it.shortName, it._shortName, it.displayName, it._displayName, it.formattedName, it._formattedName,
+      typeof it.getName === "function" ? () => it.getName() : null,
+      typeof it.getShortName === "function" ? () => it.getShortName() : null,
+      typeof it.getDisplayName === "function" ? () => it.getDisplayName() : null,
+      typeof it.getFormattedName === "function" ? () => it.getFormattedName() : null
+    );
+
+    let locName = "";
+    if (!cn && !fn && !ln && !rawName) {
+      const loc = window.glocalization || (window.services && window.services.Localization) || (window.repositories && window.repositories.Localization);
+      if (loc && typeof loc.getText === "function") {
+        for (const defId of candidateDefIds) {
+          locName = pickStr(
+            loc.getText("player_name_" + defId),
+            loc.getText("item_name_" + defId),
+            loc.getText("card_name_" + defId),
+            loc.getText("Name_" + defId),
+            loc.getText("name_" + defId),
+            loc.getText("pname_" + defId),
+            loc.getText(defId)
+          );
+          if (locName) break;
+        }
+      }
+    }
+
+    let cachedName = "";
+    const rawId = it.definitionId ?? it._definitionId ?? it.assetId ?? it._assetId ?? it.id;
+    if (rawId != null) {
+      const num = Number(rawId);
+      const baseId = (!isNaN(num) && num > 16777215) ? (num & 0xFFFFFF) : num;
+      cachedName = _nameCache.get(baseId) || _nameCache.get(num) || "";
+    }
+
+    return { commonName: cn || locName || cachedName, firstName: fn, lastName: ln, name: rawName };
   }
   function playerName(it) {
+    if (!it) return "Player";
     const { commonName, firstName, lastName, name } = getPlayerNameParts(it);
     if (commonName) return commonName;
     const full = [firstName, lastName].filter(Boolean).join(" ");
     if (full) return full;
     if (name) return name;
+
+    const rawId = it.definitionId ?? it._definitionId ?? it.assetId ?? it._assetId ?? it.id;
+    if (rawId != null) {
+      const num = Number(rawId);
+      const baseId = (!isNaN(num) && num > 16777215) ? (num & 0xFFFFFF) : rawId;
+      return "Player #" + baseId;
+    }
+
     return "Player";
   }
   function rarityName(it) {
@@ -1852,7 +2093,11 @@
     if (!matches.length) { box.innerHTML = `<div class="rhint">No player matches search or trade filter</div>`; updateRunBtn(); return; }
     
     const cap = listCapOverride || LIST_CAP;
-    matches.slice(0, cap).forEach((it) => box.appendChild(playerRow(it)));
+    const visible = matches.slice(0, cap);
+    visible.forEach((it) => box.appendChild(playerRow(it)));
+    if (visible.some((it) => playerName(it).startsWith("Player #"))) {
+      ensureItemDefinitionsLoaded(visible).then(() => { try { renderList(); } catch (_) {} });
+    }
     const extra = matches.length - cap;
     if (extra > 0) {
       const hint = document.createElement("div");
