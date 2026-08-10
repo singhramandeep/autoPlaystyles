@@ -58,15 +58,7 @@ function tick() {
 tick();
 const poller = setInterval(tick, STATUS_INTERVAL_MS);
 
-// Also fire on DOM mutations so we catch the panel appearing quickly.
-const observer = new MutationObserver(() => tick());
-observer.observe(document.body || document.documentElement, {
-  childList: true,
-  subtree: false,
-});
-
 // Clean up if the content script is ever unloaded (tab navigates away).
 window.addEventListener("pagehide", () => {
   clearInterval(poller);
-  observer.disconnect();
 });

@@ -805,15 +805,17 @@
     document.getElementById("fcevo-exp-json").addEventListener("click",  () => doExport("json"));
   }
 
-  // Wait for the #fcevo panel (apply.js polls for services, may take a few seconds).
+  // Wait for the #fcevo panel (apply.js boots after user logs in).
   function waitForPanel() {
     if (document.getElementById("fcevo")) { injectExportUI(); return; }
-    const obs = new MutationObserver(() => {
-      if (document.getElementById("fcevo")) { obs.disconnect(); injectExportUI(); }
-    });
-    obs.observe(document.body || document.documentElement, { childList: true, subtree: true });
-    // Safety timeout: give up watching after 5 minutes (tab stayed open, panel never appeared)
-    setTimeout(() => obs.disconnect(), 5 * 60 * 1000);
+    const iv = setInterval(() => {
+      if (document.getElementById("fcevo")) {
+        clearInterval(iv);
+        injectExportUI();
+      }
+    }, 1000);
+    // Safety timeout: give up watching after 5 minutes
+    setTimeout(() => clearInterval(iv), 5 * 60 * 1000);
   }
 
   if (document.readyState === "loading") {

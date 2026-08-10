@@ -50,11 +50,25 @@
   // no-JS pixel endpoint with our own path so it logs "tool loaded", not EA's pages.
   // Dashboard: https://futhelper.goatcounter.com
   const METRICS_URL = "https://futhelper.goatcounter.com/count";
-  // Glory Hunters (104, 109) and FUTTIES (70, 78, 128, 140-146, 169, 171-173) cards can hold up to 4 PS+.
+  // Glory Hunters (104, 109), FUTTIES (70, 78, 128, 140-146, 169, 171-173), and special promo cards can hold up to 4 PS+.
   const GH_RARITIES = new Set([104, 109]);
   const FUTTIES_RARITIES = new Set([70, 78, 128, 140, 141, 142, 143, 144, 145, 146, 169, 171, 172, 173]);
+  const SPECIAL_4PS_RARITIES = new Set([
+    ...FUTTIES_RARITIES,
+    ...GH_RARITIES,
+    18, 20, 28, 94, 98, 103, 107, 116, 130, 131
+  ]);
   const isGH = (it) => { try { return !!it && GH_RARITIES.has(it.rareflag); } catch (_) { return false; } };
   const isFUTTIES = (it) => { try { return !!it && FUTTIES_RARITIES.has(it.rareflag); } catch (_) { return false; } };
+  const is4PSPlusEligible = (it) => {
+    if (!it) return false;
+    try {
+      if (isFUTTIES(it) || isGH(it)) return true;
+      if (SPECIAL_4PS_RARITIES.has(it.rareflag)) return true;
+      if (capPlus(it) >= 4) return true;
+    } catch (_) {}
+    return false;
+  };
 
   // Helper functions for inspecting PlayStyles on player entities
   const numPlus = (it) => {
@@ -130,8 +144,8 @@
   const traitName = {}; // traitId -> display name (base name, no '+')
   PS.forEach((x) => (traitName[x.r - TRAIT_OFFSET] = x.n));
 
-  // Recommended playstyles per position/role. Top 3 -> PS+, rest -> base.
-  const ROLES = {"ST":{"Advanced Forward":["Finesse Shot","Low Driven Shot","Rapid","Incisive Pass","Gamechanger","Quick Step","Technical","Tiki Taka","First Touch","Press Proven","Enforcer"],"Target Forward":["Finesse Shot","Enforcer","Precision Header","Low Driven Shot","Incisive Pass","Rapid","First Touch","Gamechanger","Tiki Taka","Press Proven","Pinged Pass"],"Poacher":["Finesse Shot","Low Driven Shot","Rapid","Incisive Pass","First Touch","Gamechanger","Quick Step","Technical","Press Proven","Pinged Pass","Enforcer"],"False 9":["Finesse Shot","Incisive Pass","Low Driven Shot","Gamechanger","Rapid","Tiki Taka","Technical","Pinged Pass","Quick Step","Inventive","First Touch"]},"RW / LW":{"Inside Forward":["Finesse Shot","Low Driven Shot","Rapid","Quick Step","Technical","Gamechanger","Incisive Pass","Pinged Pass","Tiki Taka","First Touch","Inventive"],"Winger":["Rapid","Finesse Shot","Pinged Pass","Quick Step","Technical","Low Driven Shot","Gamechanger","Incisive Pass","Tiki Taka","First Touch","Inventive"],"Wide Playmaker":["Finesse Shot","Incisive Pass","Technical","Tiki Taka","Pinged Pass","Rapid","Low Driven Shot","Gamechanger","Press Proven","First Touch","Inventive"]},"CAM":{"Shadow Striker":["Finesse Shot","Incisive Pass","Rapid","Low Driven Shot","Technical","Quick Step","Tiki Taka","Gamechanger","First Touch","Pinged Pass","Inventive"],"Playmaker":["Finesse Shot","Incisive Pass","Low Driven Shot","Tiki Taka","Pinged Pass","Technical","Gamechanger","First Touch","Press Proven","Quick Step","Inventive"],"Classic 10":["Finesse Shot","Incisive Pass","Technical","Tiki Taka","Pinged Pass","Low Driven Shot","Gamechanger","First Touch","Press Proven","Quick Step","Inventive"],"Half Winger":["Incisive Pass","Rapid","Technical","Tiki Taka","Pinged Pass","Gamechanger","Quick Step","First Touch","Press Proven","Inventive","Low Driven Shot"]},"CM":{"Box to Box":["Incisive Pass","Pinged Pass","Intercept","Finesse Shot","Tiki Taka","Bruiser","Anticipate","Quick Step","Technical","Relentless","Press Proven"],"Playmaker":["Incisive Pass","Pinged Pass","Finesse Shot","Tiki Taka","Technical","Intercept","Low Driven Shot","Anticipate","First Touch","Quick Step","Inventive"],"Deep Lying Playmaker":["Intercept","Pinged Pass","Bruiser","Tiki Taka","Incisive Pass","Anticipate","Jockey","Quick Step","First Touch","Press Proven","Long Ball Pass"],"Holding":["Intercept","Pinged Pass","Bruiser","Tiki Taka","Anticipate","Jockey","Incisive Pass","Quick Step","First Touch","Press Proven","Long Ball Pass"],"Half Winger":["Pinged Pass","Intercept","Quick Step","Tiki Taka","Incisive Pass","Finesse Shot","Anticipate","Technical","Jockey","Bruiser","Rapid"]},"RM / LM":{"Inside Forward":["Finesse Shot","Low Driven Shot","Rapid","Quick Step","Technical","Gamechanger","Incisive Pass","Pinged Pass","Tiki Taka","First Touch","Inventive"],"Winger":["Rapid","Finesse Shot","Pinged Pass","Quick Step","Technical","Low Driven Shot","Gamechanger","Incisive Pass","Tiki Taka","First Touch","Inventive"],"Wide Playmaker":["Finesse Shot","Incisive Pass","Technical","Tiki Taka","Pinged Pass","Rapid","Low Driven Shot","Gamechanger","Press Proven","First Touch","Inventive"],"Wide Midfielder":["Rapid","Quick Step","Pinged Pass","Tiki Taka","Incisive Pass","Intercept","Anticipate","Relentless","Whipped Pass","Jockey","Press Proven"]},"CDM":{"Holding":["Intercept","Pinged Pass","Bruiser","Tiki Taka","Anticipate","Jockey","Incisive Pass","Quick Step","First Touch","Press Proven","Long Ball Pass"],"Deep Lying Playmaker":["Intercept","Pinged Pass","Bruiser","Tiki Taka","Incisive Pass","Anticipate","Jockey","Quick Step","First Touch","Press Proven","Long Ball Pass"],"Box Crasher":["Incisive Pass","Intercept","Pinged Pass","Finesse Shot","Tiki Taka","Quick Step","Bruiser","Anticipate","Technical","Press Proven","Relentless"],"Centre Half":["Intercept","Bruiser","Jockey","Anticipate","Quick Step","Block","Tiki Taka","Pinged Pass","Aerial Fortress","Slide Tackle","Long Ball Pass"],"Wide Half":["Bruiser","Intercept","Quick Step","Jockey","Anticipate","Incisive Pass","Block","Tiki Taka","Pinged Pass","Press Proven","Relentless"]},"RB / LB":{"Fullback":["Bruiser","Intercept","Quick Step","Jockey","Anticipate","Incisive Pass","Block","Tiki Taka","Pinged Pass","Press Proven","Relentless"],"Wingback":["Intercept","Pinged Pass","Quick Step","Anticipate","Bruiser","Tiki Taka","Jockey","Incisive Pass","Rapid","Relentless","Press Proven"],"Falseback":["Intercept","Pinged Pass","Anticipate","Jockey","Tiki Taka","Incisive Pass","Bruiser","Quick Step","First Touch","Press Proven","Long Ball Pass"],"Inverted Wingback":["Incisive Pass","Tiki Taka","Quick Step","Intercept","Anticipate","Rapid","Pinged Pass","Jockey","Press Proven","Relentless","Bruiser"],"Attacking Wingback":["Rapid","Quick Step","Pinged Pass","Tiki Taka","Incisive Pass","Intercept","Anticipate","Relentless","Jockey","First Touch","Bruiser"]},"CB":{"Defender":["Intercept","Bruiser","Anticipate","Jockey","Quick Step","Block","Pinged Pass","Aerial Fortress","Slide Tackle","Tiki Taka","Press Proven"],"Stopper":["Intercept","Bruiser","Anticipate","Jockey","Quick Step","Block","Slide Tackle","Tiki Taka","Pinged Pass","Relentless","Aerial Fortress"],"Wide Back":["Intercept","Anticipate","Quick Step","Jockey","Bruiser","Block","Pinged Pass","Aerial Fortress","Slide Tackle","Tiki Taka","Press Proven"],"Ball Playing Defender":["Intercept","Bruiser","Anticipate","Jockey","Quick Step","Block","Pinged Pass","Tiki Taka","First Touch","Press Proven","Aerial Fortress"]},"GK":{"Goalkeeper":["Far Reach","Footwork","1v1 Close Down","Deflector","Cross Claimer","Far Throw","Pinged Pass","Long Ball Pass","Tiki Taka","Press Proven","First Touch"],"Ball Playing":["Far Reach","Footwork","1v1 Close Down","Deflector","Cross Claimer","Pinged Pass","Far Throw","Long Ball Pass","Tiki Taka","Press Proven","First Touch"],"Sweeper Keeper":["Far Reach","Footwork","1v1 Close Down","Deflector","Cross Claimer","Pinged Pass","Far Throw","Long Ball Pass","Tiki Taka","Press Proven","First Touch"]}};
+  // Recommended playstyles per position/role. Top 4 -> PS+, rest -> base (up to 8 basic, total 12).
+  const ROLES = {"ST":{"Advanced Forward":["Finesse Shot","Low Driven Shot","Rapid","Incisive Pass","Gamechanger","Quick Step","Technical","Tiki Taka","First Touch","Press Proven","Enforcer","Power Shot","Relentless","Chip Shot"],"Target Forward":["Finesse Shot","Enforcer","Precision Header","Low Driven Shot","Incisive Pass","Rapid","First Touch","Gamechanger","Tiki Taka","Press Proven","Pinged Pass","Aerial Fortress","Power Shot","Bruiser"],"Poacher":["Finesse Shot","Low Driven Shot","Rapid","Incisive Pass","First Touch","Gamechanger","Quick Step","Technical","Press Proven","Pinged Pass","Enforcer","Power Shot","Chip Shot","Relentless"],"False 9":["Finesse Shot","Incisive Pass","Low Driven Shot","Gamechanger","Rapid","Tiki Taka","Technical","Pinged Pass","Quick Step","Inventive","First Touch","Press Proven","Relentless","Enforcer"]},"RW / LW":{"Inside Forward":["Finesse Shot","Low Driven Shot","Rapid","Quick Step","Technical","Gamechanger","Incisive Pass","Pinged Pass","Tiki Taka","First Touch","Inventive","Press Proven","Power Shot","Trickster"],"Winger":["Rapid","Finesse Shot","Pinged Pass","Quick Step","Technical","Low Driven Shot","Gamechanger","Incisive Pass","Tiki Taka","First Touch","Inventive","Whipped Pass","Press Proven","Trickster"],"Wide Playmaker":["Finesse Shot","Incisive Pass","Technical","Tiki Taka","Pinged Pass","Rapid","Low Driven Shot","Gamechanger","Press Proven","First Touch","Inventive","Quick Step","Long Ball Pass","Relentless"]},"CAM":{"Shadow Striker":["Finesse Shot","Incisive Pass","Rapid","Low Driven Shot","Technical","Quick Step","Tiki Taka","Gamechanger","First Touch","Pinged Pass","Inventive","Press Proven","Power Shot","Relentless"],"Playmaker":["Finesse Shot","Incisive Pass","Low Driven Shot","Tiki Taka","Pinged Pass","Technical","Gamechanger","First Touch","Press Proven","Quick Step","Inventive","Long Ball Pass","Relentless","Enforcer"],"Classic 10":["Finesse Shot","Incisive Pass","Technical","Tiki Taka","Pinged Pass","Low Driven Shot","Gamechanger","First Touch","Press Proven","Quick Step","Inventive","Long Ball Pass","Trickster","Dead Ball"],"Half Winger":["Incisive Pass","Rapid","Technical","Tiki Taka","Pinged Pass","Gamechanger","Quick Step","First Touch","Press Proven","Inventive","Low Driven Shot","Finesse Shot","Relentless","Intercept"]},"CM":{"Box to Box":["Incisive Pass","Pinged Pass","Intercept","Finesse Shot","Tiki Taka","Bruiser","Anticipate","Quick Step","Technical","Relentless","Press Proven","Long Ball Pass","First Touch","Low Driven Shot"],"Playmaker":["Incisive Pass","Pinged Pass","Finesse Shot","Tiki Taka","Technical","Intercept","Low Driven Shot","Anticipate","First Touch","Quick Step","Inventive","Press Proven","Relentless","Long Ball Pass"],"Deep Lying Playmaker":["Intercept","Pinged Pass","Bruiser","Tiki Taka","Incisive Pass","Anticipate","Jockey","Quick Step","First Touch","Press Proven","Long Ball Pass","Technical","Relentless","Block"],"Holding":["Intercept","Pinged Pass","Bruiser","Tiki Taka","Anticipate","Jockey","Incisive Pass","Quick Step","First Touch","Press Proven","Long Ball Pass","Block","Relentless","Slide Tackle"],"Half Winger":["Pinged Pass","Intercept","Quick Step","Tiki Taka","Incisive Pass","Finesse Shot","Anticipate","Technical","Jockey","Bruiser","Rapid","Press Proven","Relentless","First Touch"]},"RM / LM":{"Inside Forward":["Finesse Shot","Low Driven Shot","Rapid","Quick Step","Technical","Gamechanger","Incisive Pass","Pinged Pass","Tiki Taka","First Touch","Inventive","Press Proven","Power Shot","Trickster"],"Winger":["Rapid","Finesse Shot","Pinged Pass","Quick Step","Technical","Low Driven Shot","Gamechanger","Incisive Pass","Tiki Taka","First Touch","Inventive","Whipped Pass","Press Proven","Trickster"],"Wide Playmaker":["Finesse Shot","Incisive Pass","Technical","Tiki Taka","Pinged Pass","Rapid","Low Driven Shot","Gamechanger","Press Proven","First Touch","Inventive","Quick Step","Long Ball Pass","Relentless"],"Wide Midfielder":["Rapid","Quick Step","Pinged Pass","Tiki Taka","Incisive Pass","Intercept","Anticipate","Relentless","Whipped Pass","Jockey","Press Proven","Bruiser","Technical","First Touch"]},"CDM":{"Holding":["Intercept","Pinged Pass","Bruiser","Tiki Taka","Anticipate","Jockey","Incisive Pass","Quick Step","First Touch","Press Proven","Long Ball Pass","Block","Relentless","Aerial Fortress"],"Deep Lying Playmaker":["Intercept","Pinged Pass","Bruiser","Tiki Taka","Incisive Pass","Anticipate","Jockey","Quick Step","First Touch","Press Proven","Long Ball Pass","Technical","Relentless","Block"],"Box Crasher":["Incisive Pass","Intercept","Pinged Pass","Finesse Shot","Tiki Taka","Quick Step","Bruiser","Anticipate","Technical","Press Proven","Relentless","Long Ball Pass","First Touch","Power Shot"],"Centre Half":["Intercept","Bruiser","Jockey","Anticipate","Quick Step","Block","Tiki Taka","Pinged Pass","Aerial Fortress","Slide Tackle","Long Ball Pass","Press Proven","Relentless","First Touch"],"Wide Half":["Bruiser","Intercept","Quick Step","Jockey","Anticipate","Incisive Pass","Block","Tiki Taka","Pinged Pass","Press Proven","Relentless","Long Ball Pass","Technical","First Touch"]},"RB / LB":{"Fullback":["Bruiser","Intercept","Quick Step","Jockey","Anticipate","Incisive Pass","Block","Tiki Taka","Pinged Pass","Press Proven","Relentless","Rapid","Long Ball Pass","Slide Tackle"],"Wingback":["Intercept","Pinged Pass","Quick Step","Anticipate","Bruiser","Tiki Taka","Jockey","Incisive Pass","Rapid","Relentless","Press Proven","Whipped Pass","Technical","First Touch"],"Falseback":["Intercept","Pinged Pass","Anticipate","Jockey","Tiki Taka","Incisive Pass","Bruiser","Quick Step","First Touch","Press Proven","Long Ball Pass","Technical","Relentless","Block"],"Inverted Wingback":["Incisive Pass","Tiki Taka","Quick Step","Intercept","Anticipate","Rapid","Pinged Pass","Jockey","Press Proven","Relentless","Bruiser","Technical","First Touch","Long Ball Pass"],"Attacking Wingback":["Rapid","Quick Step","Pinged Pass","Tiki Taka","Incisive Pass","Intercept","Anticipate","Relentless","Jockey","First Touch","Bruiser","Whipped Pass","Technical","Press Proven"]},"CB":{"Defender":["Intercept","Bruiser","Anticipate","Jockey","Quick Step","Block","Pinged Pass","Aerial Fortress","Slide Tackle","Tiki Taka","Press Proven","Long Ball Pass","Relentless","First Touch"],"Stopper":["Intercept","Bruiser","Anticipate","Jockey","Quick Step","Block","Slide Tackle","Tiki Taka","Pinged Pass","Relentless","Aerial Fortress","Press Proven","Long Ball Pass","First Touch"],"Wide Back":["Intercept","Anticipate","Quick Step","Jockey","Bruiser","Block","Pinged Pass","Aerial Fortress","Slide Tackle","Tiki Taka","Press Proven","Rapid","Relentless","Long Ball Pass"],"Ball Playing Defender":["Intercept","Bruiser","Anticipate","Jockey","Quick Step","Block","Pinged Pass","Tiki Taka","First Touch","Press Proven","Aerial Fortress","Long Ball Pass","Relentless","Slide Tackle"]},"GK":{"Goalkeeper":["Far Reach","Footwork","1v1 Close Down","Deflector","Cross Claimer","Far Throw","Pinged Pass","Long Ball Pass","Tiki Taka","Press Proven","First Touch","Relentless","Quick Step","Anticipate"],"Ball Playing":["Far Reach","Footwork","1v1 Close Down","Deflector","Cross Claimer","Pinged Pass","Far Throw","Long Ball Pass","Tiki Taka","Press Proven","First Touch","Relentless","Quick Step","Anticipate"],"Sweeper Keeper":["Far Reach","Footwork","1v1 Close Down","Deflector","Cross Claimer","Pinged Pass","Far Throw","Long Ball Pass","Tiki Taka","Press Proven","First Touch","Relentless","Quick Step","Anticipate"]}};
   const psByName = {}, pspByName = {};
   PS.forEach((x) => (psByName[x.n] = x));
   PSP.forEach((x) => (pspByName[x.n.replace(/\+$/, "")] = x)); // keyed by base name
@@ -184,7 +198,7 @@
   };
 
   // rareflag -> name (EA obfuscates in-app names). Editable via data/rarities.json.
-  const RARITIES = {"0":"Common","1":"Rare","3":"Team of the Week","5":"Team of the Year","8":"Star Performer","11":"Team of the Season","12":"Icon","14":"Knockout Royalty Hero","15":"Knockout Royalty ICON","18":"Festival of Football ICON","20":"FoF: Answer the Call","21":"Prime Hero","22":"Ratings Reload","23":"Future Stars Hero","26":"UCL Primetime Hero","27":"UWCL Primetime Hero","28":"Festival of Football: Captains","30":"FUT Birthday","31":"UEFA Women's Champions League Primetime","32":"UEFA Women's Champions League Road to the Final","33":"Thunderstruck","34":"FC Pro Live","35":"Winter Wildcards ICON","36":"Journey of Nations","46":"UEFA Europa League Primetime","49":"Winter Wildcards Hero","50":"UEFA Champions League Primetime","55":"Knockout Royalty","57":"Showdown Upgrade","58":"Showdown","62":"Festival of Football Showdown","63":"Festival of Football Showdown Upgrade","64":"TOTY Honourable Mentions","65":"TOTS Honourable Mentions","69":"World Tour Silver Superstar","70":"FUTTIES","71":"Future Stars","72":"Heroes","76":"Trophy Titans ICON","77":"Trophy Titans Hero","78":"FUTTIES Hero","81":"Classic XI Hero","82":"Unbreakables","83":"Unbreakables Hero","85":"Unbreakables ICON","88":"Unbreakables Evolution","90":"Moments","91":"World Tour","94":"Festival of Football: Star Performer","96":"Joga Bonito","97":"Joga Bonito Hero","98":"Festival of Football: National Pride","103":"Festival of Football: National Pride Red","104":"Festival of Football: Glory Hunters Red","105":"UEFA Conference League Primetime","107":"Festival of Football: Path to Glory","108":"Time Warp","109":"Festival of Football: Glory Hunters","111":"Fantasy FC","112":"Time Warp ICON","116":"Festival of Football: Captains ICON","117":"Winter Wildcards","120":"TOTS Breakthrough","124":"UEFA Champions League Road to the Final","125":"UEFA Europa League Road to the Final","126":"UEFA Conference League Road to the Final","128":"FUTTIES ICON","130":"Festival of Football: Greats of the Game Hero","131":"Festival of Football: Greats of the Game ICON","132":"TOTY HM Evolution","135":"Fantasy FC Hero","140":"FUTTIES Evolution","141":"FUTTIES Premium","142":"FUTTIES Premium Hero","143":"FUTTIES Premium ICON","144":"FUTTIES Re-Release","145":"FUTTIES Batch 1","146":"FUTTIES Batch 2","147":"FUT Birthday EVO","148":"FUT Birthday Hero","149":"FUT Birthday ICON","150":"Cornerstones","151":"Ultimate Scream","155":"Team of the Year ICON","157":"Thunderstruck ICON","168":"Ultimate Scream Hero","169":"FUTTIES Batch 3","170":"Future Stars ICON","171":"FUTTIES Premium Evolution","172":"FUTTIES Red","173":"FUTTIES Pink"};
+  const RARITIES = {"0":"Common","1":"Rare","3":"Team of the Week","5":"Team of the Year","8":"Star Performer","11":"Team of the Season","12":"Icon","13":"Hero","14":"Knockout Royalty Hero","15":"Knockout Royalty ICON","16":"In Progress Evolution","17":"Evolution","18":"Festival of Football ICON","20":"FoF: Answer the Call","21":"Prime Hero","22":"Ratings Reload","23":"Future Stars Hero","26":"UCL Primetime Hero","27":"UWCL Primetime Hero","28":"Festival of Football: Captains","30":"FUT Birthday","31":"UEFA Women's Champions League Primetime","32":"UEFA Women's Champions League Road to the Final","33":"Thunderstruck","34":"FC Pro Live","35":"Winter Wildcards ICON","36":"Journey of Nations","46":"UEFA Europa League Primetime","49":"Winter Wildcards Hero","50":"UEFA Champions League Primetime","55":"Knockout Royalty","57":"Showdown Upgrade","58":"Showdown","62":"Festival of Football Showdown","63":"Festival of Football Showdown Upgrade","64":"TOTY Honourable Mentions","65":"TOTS Honourable Mentions","69":"World Tour Silver Superstar","70":"FUTTIES","71":"Future Stars","72":"Heroes","76":"Trophy Titans ICON","77":"Trophy Titans Hero","78":"FUTTIES Hero","81":"Classic XI Hero","82":"Unbreakables","83":"Unbreakables Hero","85":"Unbreakables ICON","88":"Unbreakables Evolution","90":"Moments","91":"World Tour","94":"Festival of Football: Star Performer","96":"Joga Bonito","97":"Joga Bonito Hero","98":"Festival of Football: National Pride","103":"Festival of Football: National Pride Red","104":"Festival of Football: Glory Hunters Red","105":"UEFA Conference League Primetime","107":"Festival of Football: Path to Glory","108":"Time Warp","109":"Festival of Football: Glory Hunters","111":"Fantasy FC","112":"Time Warp ICON","116":"Festival of Football: Captains ICON","117":"Winter Wildcards","120":"TOTS Breakthrough","124":"UEFA Champions League Road to the Final","125":"UEFA Europa League Road to the Final","126":"UEFA Conference League Road to the Final","128":"FUTTIES ICON","130":"Festival of Football: Greats of the Game Hero","131":"Festival of Football: Greats of the Game ICON","132":"TOTY HM Evolution","135":"Fantasy FC Hero","140":"FUTTIES Evolution","141":"FUTTIES Premium","142":"FUTTIES Premium Hero","143":"FUTTIES Premium ICON","144":"FUTTIES Re-Release","145":"FUTTIES Batch 1","146":"FUTTIES Batch 2","147":"FUT Birthday EVO","148":"FUT Birthday Hero","149":"FUT Birthday ICON","150":"Cornerstones","151":"Ultimate Scream","155":"Team of the Year ICON","157":"Thunderstruck ICON","168":"Ultimate Scream Hero","169":"FUTTIES Batch 3","170":"Future Stars ICON","171":"FUTTIES Premium Evolution","172":"FUTTIES Red","173":"FUTTIES Pink"};
 
   const state = {
     mode: "single", // "single" (manual, one player) | "auto" (bulk auto-resolve)
@@ -214,13 +228,28 @@
   const jitter = (ms) => Math.max(120, Math.round(ms * (0.65 + Math.random() * 0.7)));
 
   // --- Engine ---------------------------------------------------------------
-  function svcObserve(observable) {
+  function svcObserve(observable, timeoutMs = 15000) {
     return new Promise((resolve, reject) => {
       if (!observable || typeof observable.observe !== "function") return reject(new Error("not an observable"));
       let done = false;
-      observable.observe(window, function (obs, res) {
-        if (done) return; done = true;
-        try { obs.unobserve(window); } catch (_) {}
+      const target = {}; // Unique observer target — NEVER use window
+      let timer = null;
+      const cleanup = () => {
+        if (timer) { clearTimeout(timer); timer = null; }
+        try { observable.unobserve(target); } catch (_) {}
+      };
+      if (timeoutMs > 0) {
+        timer = setTimeout(() => {
+          if (done) return;
+          done = true;
+          cleanup();
+          reject(new Error("Service call timed out"));
+        }, timeoutMs);
+      }
+      observable.observe(target, function (obs, res) {
+        if (done) return;
+        done = true;
+        cleanup();
         if (res && res.success) resolve(res); else reject(res || new Error("call failed"));
       });
     });
@@ -271,10 +300,16 @@
     const R = acadRepo(); if (!R) return;
     GH.length = 0;
     (R.getSlots() || []).forEach((s) => {
-      if (!s.slotName || s.slotName.indexOf("GH 4th ") !== 0) return;
+      if (!s.slotName) return;
+      const is4th = s.slotName.indexOf("GH 4th ") === 0
+        || s.slotName.indexOf("4th ") === 0
+        || s.slotName.indexOf("4th PS+") === 0
+        || (s.categoryId === 9 && s.slotName.includes("PlayStyle+"));
+      if (!is4th) return;
       let r; try { r = s.getAllSlotRewards()[0].type; } catch (_) {}
       if (r == null) return;
-      GH.push({ n: s.slotName.slice(7).trim(), s: s.id, r, kind: "PS+", g: 0, gh: true });
+      const cleanName = s.slotName.replace(/^(?:GH\s+)?4th\s+(?:PS\+\s+)?/i, "").trim();
+      GH.push({ n: cleanName || s.slotName, s: s.id, r, kind: "PS+", g: 0, gh: true });
     });
     GH.forEach((g) => { if (!ALL.includes(g)) ALL.push(g); }); // make GH slots resolvable via byId()
   }
@@ -695,13 +730,17 @@
     });
 
     if (remaining.length) {
-      await Promise.all(remaining.slice(0, 30).map(async (id) => {
+      await Promise.all(remaining.slice(0, 20).map(async (id) => {
         try {
+          const ctrl = new AbortController();
+          const tid = setTimeout(() => ctrl.abort(), 3000);
           const res = await fetch(`https://futdb.app/api/players/${id}`, {
-            headers: { "Accept": "application/json" }
+            headers: { "Accept": "application/json" },
+            signal: ctrl.signal
           }).catch(() => null);
+          clearTimeout(tid);
           if (res && res.ok) {
-            const data = await res.json();
+            const data = await res.json().catch(() => null);
             const pName = data?.player?.common_name || data?.player?.name || data?.player?.last_name || data?.name;
             if (pName) _nameCache.set(id, pName);
           }
@@ -875,8 +914,67 @@
     return "Player";
   }
   function rarityName(it) {
-    const n = RARITIES[it.rareflag];
-    return n || ("Rarity " + it.rareflag);
+    if (!it) return "";
+    const rf = it.rareflag ?? it._rareflag ?? (typeof it.getRareflag === "function" ? (() => { try { return it.getRareflag(); } catch (_) {} })() : null);
+    if (rf == null) return "";
+
+    if (RARITIES[rf]) return RARITIES[rf];
+
+    try {
+      const R = window.repositories, S = window.services;
+      const rObj = (R && R.ItemRarity && typeof R.ItemRarity.get === "function" && R.ItemRarity.get(rf))
+        || (R && R.Rarity && typeof R.Rarity.get === "function" && R.Rarity.get(rf))
+        || (S && S.ItemRarity && typeof S.ItemRarity.get === "function" && S.ItemRarity.get(rf));
+      if (rObj) {
+        const name = rObj.name || rObj._name || rObj.description || rObj.label || rObj.locKey;
+        if (name && typeof name === "string" && name.trim() && !name.startsWith("rarity_")) return name.trim();
+      }
+    } catch (_) {}
+
+    try {
+      const loc = window.glocalization || (window.services && window.services.Localization) || (window.repositories && window.repositories.Localization);
+      if (loc && typeof loc.getText === "function") {
+        const keys = ["rarity_name_" + rf, "item_rarity_" + rf, "rarity_" + rf, "search_rarity_" + rf, "card_rarity_" + rf, "Rarity_" + rf];
+        for (const k of keys) {
+          const txt = loc.getText(k);
+          if (txt && typeof txt === "string" && !txt.startsWith("rarity_") && !txt.startsWith("item_rarity_") && !txt.startsWith("search_rarity_") && !txt.startsWith("card_rarity_") && !txt.startsWith("missing key") && !txt.startsWith("Rarity_")) {
+            return txt.trim();
+          }
+        }
+      }
+    } catch (_) {}
+
+    try {
+      let sd = {};
+      if (typeof it.getStaticData === "function") sd = it.getStaticData() || {};
+      if (!sd || !Object.keys(sd).length) sd = it._staticData || it.staticData || {};
+      const name = it.rarityName || it._rarityName || sd.rarityName || sd._rarityName;
+      if (name && typeof name === "string" && name.trim()) return name.trim();
+    } catch (_) {}
+
+    const COMMON_RF_FALLBACKS = {
+      16: "In Progress Evolution",
+      17: "Evolution",
+      70: "FUTTIES",
+      78: "FUTTIES Hero",
+      104: "Glory Hunters Red",
+      109: "Glory Hunters",
+      128: "FUTTIES ICON",
+      140: "FUTTIES Evolution",
+      141: "FUTTIES Premium",
+      142: "FUTTIES Premium Hero",
+      143: "FUTTIES Premium ICON",
+      144: "FUTTIES Re-Release",
+      145: "FUTTIES Batch 1",
+      146: "FUTTIES Batch 2",
+      169: "FUTTIES Batch 3",
+      171: "FUTTIES Premium Evolution",
+      172: "FUTTIES Red",
+      173: "FUTTIES Pink"
+    };
+    if (COMMON_RF_FALLBACKS[rf]) return COMMON_RF_FALLBACKS[rf];
+
+    return "Rarity " + rf;
   }
 
   // Scrape rareflag -> name from the open transfer-market rarity filter DOM
@@ -1365,7 +1463,7 @@
           <div class="tabs" style="margin-top:9px">
             <button data-tab="PS+">PlayStyle+ (36)</button>
             <button data-tab="PS">PlayStyle (36)</button>
-            <button data-tab="GH4" class="gh4tab disabled" data-tip="4th PlayStyle+|Glory Hunters cards can hold a 4th PS+ via reward evos — only for a GH card that already has 3 PS+.">4th PS+</button>
+            <button data-tab="GH4" class="gh4tab disabled" data-tip="4th PlayStyle+|FUTTIES, Glory Hunters, and special cards can hold a 4th PS+ — pick an eligible card to choose a 4th PS+.">4th PS+</button>
           </div>
           <div class="row" style="margin:7px 0;justify-content:flex-end">
             <button class="mini" data-act="none">Clear selection</button>
@@ -1471,7 +1569,6 @@
     checkUpdate();
     checkNotice();
     renderList();
-    startClubLoad(1);
     try { new Image().src = METRICS_URL + "?p=/evo/load&t=" + encodeURIComponent("Evo Helper"); } catch (_) {} // anonymous cookieless load ping, best-effort
   }
 
@@ -2039,11 +2136,13 @@
     const isUntr = isUntradeableCard(it);
     const posInfo = getPlayerPositions(it);
     const prefPos = posInfo.mainPos || "—";
+    const rar = rarityName(it);
     const posBadge = `<span class="pos-chip" title="Preferred Position: ${esc(prefPos)}">${esc(prefPos)}</span>`;
+    const rarBadge = rar ? `<span class="pos-chip rar-chip" style="background:rgba(139,92,246,0.15);color:#a78bfa;border:1px solid rgba(139,92,246,0.3);margin-left:3px" title="Card Rarity: ${esc(rar)}">${esc(rar)}</span>` : "";
     const trdBadge = `<span class="trd-badge ${isUntr ? "untr" : "trd"}" title="${isUntr ? "Untradeable card" : "Tradeable card"}">${isUntr ? "UNT" : "TRD"}</span>`;
     row.innerHTML =
       `<span class="ov">${it.rating ?? "?"}</span>`
-      + `<span class="nm">${esc(playerName(it))}${posBadge}${trdBadge}</span>`
+      + `<span class="nm">${esc(playerName(it))}${posBadge}${rarBadge}${trdBadge}</span>`
       + psChips(it)
       + `<button class="view-btn" data-act="view-attrs" title="View all attributes & details">View</button>`;
     row.addEventListener("click", (e) => {
@@ -2170,23 +2269,22 @@
   // Why the 4th-PS+ tab is locked for the current pick ("" = it's available).
   function ghDisabledReason() {
     const it = state.item;
-    if (!it) return "Select a Glory Hunters card first";
-    if (!isGH(it)) return "Glory Hunters cards only";
+    if (!it) return "Select a player first";
+    if (!is4PSPlusEligible(it)) return "FUTTIES, Glory Hunters, or 4-PS+ cards only";
     const np = numPlus(it) ?? 0;
-    if (np < 3) return "Needs 3 PS+ first";
     if (np >= 4) return "Already has 4 PS+";
     return "";
   }
   // Keep the 4th-PS+ tab ALWAYS visible (so people discover it) but greyed out with
-  // a hover tip unless the selected card is a Glory Hunters card with exactly 3 PS+.
+  // a hover tip unless the selected card is eligible for a 4th PS+.
   function updateGHTab() {
     const btn = ghTabBtn(); if (!btn) return;
     const reason = ghDisabledReason();
     const enabled = !reason;
     btn.classList.toggle("disabled", !enabled);
     btn.setAttribute("data-tip", "4th PlayStyle+|" + (enabled
-      ? "Add a 4th PS+ to this Glory Hunters card via a reward evo — pick one below."
-      : reason + ". The 4th PS+ is only for Glory Hunters cards that already have 3 PS+."));
+      ? "Add a 4th PS+ to this card via a reward evo — pick one below."
+      : reason));
     const paint = () => {
       const b = ghTabBtn(); if (!b) return;
       b.textContent = "4th PS+" + (ghLoaded && ghKinds() ? " (" + ghKinds() + ")" : "");
@@ -2194,12 +2292,12 @@
     };
     if (!enabled) { if (tab === "GH4") setTab("PS+"); paint(); return; }
     if (ghLoaded) { paint(); return; }
-    log("Loading Glory Hunters evos…", "dim");
+    log("Loading 4th PlayStyle+ evos…", "dim");
     loadGHEvos().then(() => {
       paint();
-      if (GH.length) log(`Glory Hunters evos ready — ${ghKinds()} playstyle${ghKinds() === 1 ? "" : "s"}.`, "head");
-      else if (ghLoaded) log("No Glory Hunters reward evos on this account.", "warn");
-      else log("Couldn't load Glory Hunters evos — will retry on next select.", "warn");
+      if (GH.length) log(`4th PlayStyle+ evos ready — ${ghKinds()} playstyle${ghKinds() === 1 ? "" : "s"}.`, "head");
+      else if (ghLoaded) log("No 4th PS+ reward evos on this account.", "warn");
+      else log("Couldn't load 4th PS+ evos — will retry on next select.", "warn");
     });
   }
 
@@ -2224,10 +2322,12 @@
   function suggestedSlots(it, pos, role) {
     const names = (ROLES[pos] && ROLES[pos][role]) || [];
     const gk = isGKItem(it);
+    const maxPlus = capPlus(it) || (is4PSPlusEligible(it) ? 4 : 3);
+    const maxBasic = capBasic(it) || 8;
     let plusUsed = numPlus(it) ?? 0, baseUsed = numBasic(it) ?? 0, owned = 0;
     const slots = [], skip = [];
     names.forEach((name, idx) => {
-      const wantPlus = idx < 3; // top 3 -> PS+
+      const wantPlus = idx < maxPlus && plusUsed < maxPlus; // top 4 for 4-PS+ cards (FUTTIES/GH), top 3 for 3-PS+ cards!
       const evo = wantPlus ? pspByName[name] : psByName[name];
       if (!evo) { skip.push(name); return; }
       if (evo.g && !gk) { skip.push(name + " (GK-only)"); return; }
@@ -2236,8 +2336,8 @@
       // 4th-PS+ from a prior evo) can't be applied — the + already covers it. The grid
       // blocks this; Suggest must too, or it preselects an impossible pick.
       if (evo.kind === "PS") { let po = false; try { po = !!it.hasPlusPlayStyle(evoTrait(evo)); } catch (_) {} if (po) { owned++; return; } }
-      if (wantPlus) { const cap = capPlus(it); if (plusUsed >= cap) { skip.push(name + "+ (no room)"); return; } plusUsed++; }
-      else { const cap = capBasic(it); if (baseUsed >= cap) { skip.push(name + " (no room)"); return; } baseUsed++; }
+      if (wantPlus) { if (plusUsed >= maxPlus) { skip.push(name + "+ (no room)"); return; } plusUsed++; }
+      else { if (baseUsed >= maxBasic) { skip.push(name + " (no room)"); return; } baseUsed++; }
       slots.push(evo.s);
     });
     return { slots, owned, skip };
@@ -2910,27 +3010,67 @@ function bindQueueEvents() {
     });
   }
 
+  // Check if the user is authenticated and the main Web App UI is active (not on login/landing view)
+  function isAppLoggedInAndReady() {
+    try {
+      const auth = window.services?.Authentication;
+      if (auth && typeof auth.isLoggedIn === "function" && !auth.isLoggedIn()) {
+        return false;
+      }
+      const userSvc = window.services?.User;
+      if (userSvc && typeof userSvc.getUser === "function") {
+        const u = userSvc.getUser();
+        if (!u || (!u.personaId && !u.id && !u.selectedPersona)) return false;
+      }
+      if (typeof window.getAppMain === "function") {
+        const main = window.getAppMain();
+        if (!main) return false;
+        const rootVC = typeof main.getRootViewController === "function" ? main.getRootViewController() : null;
+        if (!rootVC) return false;
+        const vcName = (rootVC.className || rootVC.constructor?.name || "").toLowerCase();
+        if (vcName.includes("landing") || vcName.includes("login") || vcName.includes("auth")) {
+          return false;
+        }
+      }
+      if (document.querySelector(".ut-login-client-view, .ut-landing-view, .ut-login-container, .ut-click-shield-view")) {
+        return false;
+      }
+      const hasNav = !!document.querySelector(".ut-tab-bar-view, .ut-navigation-container-view, .ut-tab-bar-item, button.ut-tab-bar-item, nav");
+      const hasServices = !!(window.services?.Club?.search && (window.services?.Academy || window.repositories?.Academy));
+      return hasNav && hasServices;
+    } catch (_) {
+      return false;
+    }
+  }
+
   // --- boot -----------------------------------------------------------------
   function boot() {
-    let tries = 0;
-    const iv = setInterval(() => {
-      tries++;
-      if (ACAD() && CLUB()) {
-        clearInterval(iv);
-        if (!document.getElementById("fcevo")) build();
-        window.FCEvo = { applyEvo, claimEvo, removeEvoUpgrade, removeLastEvo, canRemoveEvo, runBatch, runDispatch, state, PS, PSP, RARITIES, clubPlayers, selectPlayer, scrapeRarities, clubRaritiesDump, eligibleRarities, loadClub, startClubLoad, readAttrs, dumpEntity, openEntity, freshItemById, reloadAndReselect, setMode, autoResolveRole, suggestedSlots, toggleQueue, clearQueue, requestRun };
-        // Wait until the active squad is loaded (app ready for club searches), then
-        // load the club. Hard fallback at 15s so it can't hang; retries cover the rest.
-        setClubStatus("Club: waiting for squad…", "load");
-        let waited = 0;
-        const checkSquad = () => {
-          if (squadReady() || waited >= 15000) { clearInterval(gate); startClubLoad(1); return; }
-          waited += 200;
-        };
-        const gate = setInterval(checkSquad, 200);
-        checkSquad(); // check immediately, don't wait for the first interval
-      } else if (tries > 160) { clearInterval(iv); if (!document.getElementById("fcevo")) build(); log("⚠ Academy/club not ready. Open the app & your Club tab.", "warn"); }
-    }, 500);
+    let booted = false;
+    const checkAndInit = () => {
+      if (booted) return;
+      if (!isAppLoggedInAndReady()) return;
+
+      booted = true;
+      clearInterval(iv);
+      if (!document.getElementById("fcevo")) build();
+      window.FCEvo = { applyEvo, claimEvo, removeEvoUpgrade, removeLastEvo, canRemoveEvo, runBatch, runDispatch, state, PS, PSP, RARITIES, clubPlayers, selectPlayer, scrapeRarities, clubRaritiesDump, eligibleRarities, loadClub, startClubLoad, readAttrs, dumpEntity, openEntity, freshItemById, reloadAndReselect, setMode, autoResolveRole, suggestedSlots, toggleQueue, clearQueue, requestRun };
+      
+      setClubStatus("Club: waiting for squad…", "load");
+      let waited = 0;
+      const checkSquad = () => {
+        if (squadReady() || waited >= 12000) {
+          clearInterval(gate);
+          startClubLoad(1);
+          return;
+        }
+        waited += 250;
+      };
+      const gate = setInterval(checkSquad, 250);
+      checkSquad();
+    };
+
+    const iv = setInterval(checkAndInit, 1000);
+    checkAndInit();
   }
   if (document.readyState !== "loading") boot(); else window.addEventListener("DOMContentLoaded", boot);
 })();
