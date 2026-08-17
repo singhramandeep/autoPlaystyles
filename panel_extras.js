@@ -401,6 +401,12 @@
         numBasicUsed: numBasic ?? null, numBasicCap: capBasic,
         psRoomPlus:  numPlus  != null ? Math.max(0, capPlus  - numPlus)  : null,
         psRoomBasic: numBasic != null ? Math.max(0, capBasic - numBasic) : null,
+        hasEvolutionApplied: (isEvolved || (numPlus || 0) > 0 || (numBasic || 0) > 0 || canRemoveEvo) ? "YES" : "NO",
+        hasEvolution: isEvolved || (numPlus || 0) > 0 || (numBasic || 0) > 0 || canRemoveEvo,
+        evolutionStatus: (isEvolved || (numPlus || 0) > 0 || (numBasic || 0) > 0 || canRemoveEvo)
+          ? `Evolved (${numPlus || 0} PS+, ${numBasic || 0} PS)`
+          : "Clean (No Evolutions)",
+        evolutionsAppliedCount: (numPlus || 0) + (numBasic || 0),
         isEvolved, canRemoveEvo,
       };
     }
@@ -409,6 +415,7 @@
       if (!players.length) return "";
       const headers = [
         "id","name","rating","rareflag","preferredPos","allPositions","isGK",
+        "hasEvolutionApplied","evolutionStatus",
         "height","weight","age","preferredFoot","skillMoves","weakFoot",
         "attackWorkRate","defenseWorkRate","bodyType","nationality",
         "leagueId","teamId","untradeable",

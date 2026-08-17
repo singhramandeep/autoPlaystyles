@@ -471,6 +471,12 @@ if (!window.FCEvoExport) {
         psRoomPlus:  numPlus  != null ? Math.max(0, capPlus  - numPlus)  : null,
         psRoomBasic: numBasic != null ? Math.max(0, capBasic - numBasic) : null,
         // Evo
+        hasEvolutionApplied: (isEvolved || (numPlus || 0) > 0 || (numBasic || 0) > 0 || canRemoveEvo) ? "YES" : "NO",
+        hasEvolution: isEvolved || (numPlus || 0) > 0 || (numBasic || 0) > 0 || canRemoveEvo,
+        evolutionStatus: (isEvolved || (numPlus || 0) > 0 || (numBasic || 0) > 0 || canRemoveEvo)
+          ? `Evolved (${numPlus || 0} PS+, ${numBasic || 0} PS)`
+          : "Clean (No Evolutions)",
+        evolutionsAppliedCount: (numPlus || 0) + (numBasic || 0),
         isEvolved, canRemoveEvo,
       };
     }
@@ -480,6 +486,7 @@ if (!window.FCEvoExport) {
       if (!players.length) return "";
       const headers = [
         "id","name","fullName","rating","rareflag","preferredPos","allPositions","positionRoles","isGK",
+        "hasEvolutionApplied","evolutionStatus",
         "chemistryStyle","gamesPlayed","goalsScored","assists","yellowCards","redCards","injuryDetails",
         "countryName","leagueName","teamName","untradeable","is1stOwner",
         "height","weight","age","birthdate","preferredFoot","skillMoves","weakFoot",

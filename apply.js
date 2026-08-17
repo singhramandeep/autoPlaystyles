@@ -36,6 +36,13 @@
 (function () {
   "use strict";
 
+  function esc(s) {
+    if (s == null) return "";
+    return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  }
+
+  const safe = (fn) => { try { return fn(); } catch (_) { return null; } };
+
   const CAP_PLUS = 4, CAP_BASIC = 8, TRAIT_OFFSET = 301; // traitId = rewardId - 301 (icon classes run 0..35)
   const SETTLE_MS = 700; // wait after an apply/remove for the server to commit before re-fetching (else stale card)
   const REPO_URL = "https://github.com/nezygis/fc26-playstyle-evo-helper";
@@ -201,14 +208,18 @@
   const RARITIES = {"0":"Common","1":"Rare","3":"Team of the Week","5":"Team of the Year","8":"Star Performer","11":"Team of the Season","12":"Icon","13":"Hero","14":"Knockout Royalty Hero","15":"Knockout Royalty ICON","16":"In Progress Evolution","17":"Evolution","18":"Festival of Football ICON","20":"FoF: Answer the Call","21":"Prime Hero","22":"Ratings Reload","23":"Future Stars Hero","26":"UCL Primetime Hero","27":"UWCL Primetime Hero","28":"Festival of Football: Captains","30":"FUT Birthday","31":"UEFA Women's Champions League Primetime","32":"UEFA Women's Champions League Road to the Final","33":"Thunderstruck","34":"FC Pro Live","35":"Winter Wildcards ICON","36":"Journey of Nations","46":"UEFA Europa League Primetime","49":"Winter Wildcards Hero","50":"UEFA Champions League Primetime","55":"Knockout Royalty","57":"Showdown Upgrade","58":"Showdown","62":"Festival of Football Showdown","63":"Festival of Football Showdown Upgrade","64":"TOTY Honourable Mentions","65":"TOTS Honourable Mentions","69":"World Tour Silver Superstar","70":"FUTTIES","71":"Future Stars","72":"Heroes","76":"Trophy Titans ICON","77":"Trophy Titans Hero","78":"FUTTIES Hero","81":"Classic XI Hero","82":"Unbreakables","83":"Unbreakables Hero","85":"Unbreakables ICON","88":"Unbreakables Evolution","90":"Moments","91":"World Tour","94":"Festival of Football: Star Performer","96":"Joga Bonito","97":"Joga Bonito Hero","98":"Festival of Football: National Pride","103":"Festival of Football: National Pride Red","104":"Festival of Football: Glory Hunters Red","105":"UEFA Conference League Primetime","107":"Festival of Football: Path to Glory","108":"Time Warp","109":"Festival of Football: Glory Hunters","111":"Fantasy FC","112":"Time Warp ICON","116":"Festival of Football: Captains ICON","117":"Winter Wildcards","120":"TOTS Breakthrough","124":"UEFA Champions League Road to the Final","125":"UEFA Europa League Road to the Final","126":"UEFA Conference League Road to the Final","128":"FUTTIES ICON","130":"Festival of Football: Greats of the Game Hero","131":"Festival of Football: Greats of the Game ICON","132":"TOTY HM Evolution","135":"Fantasy FC Hero","140":"FUTTIES Evolution","141":"FUTTIES Premium","142":"FUTTIES Premium Hero","143":"FUTTIES Premium ICON","144":"FUTTIES Re-Release","145":"FUTTIES Batch 1","146":"FUTTIES Batch 2","147":"FUT Birthday EVO","148":"FUT Birthday Hero","149":"FUT Birthday ICON","150":"Cornerstones","151":"Ultimate Scream","155":"Team of the Year ICON","157":"Thunderstruck ICON","168":"Ultimate Scream Hero","169":"FUTTIES Batch 3","170":"Future Stars ICON","171":"FUTTIES Premium Evolution","172":"FUTTIES Red","173":"FUTTIES Pink"};
 
   const state = {
-    mode: "single", // "single" (manual, one player) | "auto" (bulk auto-resolve)
     item: null, // selected club item entity
-    selected: new Set(), // slotIds
-    queue: [], // auto-mode: [{ item, role:{pos,role}, slots:[slotIds] }] — click a player to add
+    selected: new Set(), // slotIds currently selected
+    selectedOrder: [], // ordered slotIds for exact user-defined application sequence
+    reserveOrder: [], // slotIds sitting in temporary reserve area
+    cursorIndex: 0, // insertion cursor index in selectedOrder (0..selectedOrder.length)
+    suggestedSlots: new Set(), // slotIds auto-suggested for the active role/position
     running: false, abort: false,
     rarities: new Set(), // allowed rareflags for club search; empty = all
-    trdFilter: "all", // "all" | "trd" (tradeable) | "untr" (untradeable)
-    psFilter: "all", // "all" | "none" (0 PS) | "has" (has PS)
+    trdFilter: "untr", // default: untradeable
+    psFilter: "none", // default: 0 PlayStyles
+    sortOrder: "cat", // "cat" (by category) | "alpha" (alphabetical A-Z)
+    psSearchQ: "", // PlayStyle quick-search query
     clubItems: null, // players we loaded ourselves (full club / eligible rarities)
   };
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -348,8 +359,7 @@
   async function applySlots(item, slotIds, opts, prefix) {
     const itemId = item.id; let ok = 0, fail = 0; const done = [];
     prefix = prefix || "";
-    // Apply base PlayStyles first, PlayStyle+ last.
-    slotIds = [...slotIds].sort((a, b) => ((byId(a) && byId(a).kind === "PS+") ? 1 : 0) - ((byId(b) && byId(b).kind === "PS+") ? 1 : 0));
+    // Note: Apply sequence follows the user-defined / dragged order in slotIds
     for (let i = 0; i < slotIds.length; i++) {
       if (state.abort) { log(`${prefix}⏹ Aborted.`, "warn"); break; }
       const evo = byId(slotIds[i]);
@@ -376,7 +386,10 @@
     const { ok, fail, done } = await applySlots(state.item, slotIds, opts);
     // Applied evos are now owned; drop them from the selection so the count and cap
     // projection don't double-count them against the fresh entity.
-    done.forEach((s) => state.selected.delete(s));
+    done.forEach((s) => {
+      state.selected.delete(s);
+      state.selectedOrder = state.selectedOrder.filter((x) => x !== s);
+    });
     refreshClub();
     try {
       const fresh = freshItemById(itemId);
@@ -399,36 +412,15 @@
     log(`■ Done: ${ok} ok, ${fail} failed.`, "head");
   }
 
-  // Apply entry point for the Run button. Single mode -> runBatch. Auto mode ->
-  // apply the queue (each entry already carries its resolved evo slots), after a confirm.
+  // Apply entry point for the Run button: apply selected evolutions to the active player.
   async function runDispatch(opts) {
-    if (state.mode !== "auto") return runBatch([...state.selected], opts);
-    if (state.running) return;
-    if (!state.queue.length) return log("✋ Queue is empty — click players to add them.", "warn");
-    const entries = state.queue.map((q) => ({ item: q.item, slots: q.slots }));
-    const totalEvos = entries.reduce((s, e) => s + e.slots.length, 0);
-    state.running = true; state.abort = false; setRunning(true);
-    let totalOk = 0, totalFail = 0;
-    const multi = entries.length > 1;
-    log(`▶▶ Evolving ${entries.length} player${multi ? "s" : ""}, ~${totalEvos} evos`, "head");
-    for (let p = 0; p < entries.length; p++) {
-      if (state.abort) { log("⏹ Aborted.", "warn"); break; }
-      const { item, slots } = entries[p];
-      log(`━━ ${p + 1}/${entries.length}: ${playerName(item)} (${item.rating}) — ${slots.length} evo(s) ━━`, "head");
-      const res = await applySlots(item, slots, opts, `[${playerName(item)}] `);
-      totalOk += res.ok; totalFail += res.fail;
-      if (multi && p < entries.length - 1 && !state.abort) await sleep(opts.delayMs * 2);
-    }
-    refreshClub();
-    if (totalOk > 0) {
-      await sleep(SETTLE_MS);
-      const focusId = state.item ? state.item.id : entries[0].item.id;
-      try { await reloadAndReselect(focusId); } catch (_) {}
-    }
-    state.queue = []; // done — clear the queue
-    renderList(); renderQueue(); renderPreview(); renderGrid(); updateCount(); updateRunBtn();
-    state.running = false; setRunning(false);
-    log(`■ Done: ${totalOk} ok, ${totalFail} failed across ${entries.length} player${multi ? "s" : ""}.`, "head");
+    if (!state.item) return log("✋ No player selected — select a player from the list.", "warn");
+    if (!state.selected.size) return log("✋ No evolutions selected — select playstyles to apply.", "warn");
+    
+    // Preserve user-defined order in state.selectedOrder
+    const ordered = state.selectedOrder.filter((s) => state.selected.has(s));
+    state.selected.forEach((s) => { if (!ordered.includes(s)) ordered.push(s); });
+    return runBatch(ordered, opts);
   }
 
   // Mirror what the app's own academy flow does after an apply, so views pick up
@@ -1140,30 +1132,25 @@
   // UI
   // ==========================================================================
   let els = {}, tab = "PS+", searchQ = "";
-  let _armTimer = null; // in-panel two-step confirm for the Evolve button
-  let rarQ = ""; // rarity dropdown filter query
 
   function css() {
     const s = document.createElement("style");
     s.textContent = `
-    #fcevo{--ink:#0b0f14;--char:#141b23;--char2:#1d2732;--line:#28323d;--line2:#394653;
-      --bone:#e7edf3;--ash:#a4b3c1;--acc:#33d6c1;--acc-ink:#052420;--good:#4fd08a;--bad:#ff6b6b;--warn:#f2c14e;
-      --gold1:#f6d879;--gold2:#c9942f;--grot:-apple-system,"Helvetica Neue",Arial,sans-serif;--mono:var(--grot);
-      position:fixed;top:54px;right:16px;width:min(384px, calc(100vw - 20px));max-height:90vh;z-index:2147483647;background:var(--ink);color:var(--bone);
-      font:12.5px/1.45 var(--grot);border:1px solid var(--line2);box-shadow:0 26px 64px -24px #000;display:flex;flex-direction:column;overflow:hidden}
+    #fcevo{--ink:#0b0f14;--char:#141b23;--char2:#1d2732;--char3:#253241;--line:#28323d;--line2:#394653;
+      --bone:#e7edf3;--ash:#a4b3c1;--acc:#33d6c1;--acc-glow:rgba(51,214,193,0.35);--acc-ink:#052420;--good:#4fd08a;--bad:#ff6b6b;--warn:#f2c14e;
+      --gold1:#f6d879;--gold2:#c9942f;--pink:#ec4899;--violet:#8b5cf6;--grot:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;--mono:ui-monospace,Menlo,Consolas,monospace;
+      position:fixed;top:54px;right:16px;width:min(480px, calc(100vw - 20px));min-width:400px;max-width:720px;resize:horizontal;max-height:90vh;z-index:2147483647;background:rgba(11,15,20,0.96);backdrop-filter:blur(10px);color:var(--bone);
+      font:12.5px/1.45 var(--grot);border:1px solid var(--line2);border-radius:10px;box-shadow:0 26px 64px -24px #000, 0 0 0 1px rgba(255,255,255,0.06);display:flex;flex-direction:column;overflow:hidden}
     #fcevo *{box-sizing:border-box}
-    /* readability: keep the HUD look, but no ALL-CAPS / wide tracking (mixed case reads faster) */
     #fcevo, #fcevo *{text-transform:none !important;letter-spacing:normal !important}
     #fcevo select,#fcevo input{min-width:0}
-    #fcevo header{display:flex;align-items:center;gap:9px;padding:12px 13px;background:var(--char);border-bottom:1px solid var(--line);cursor:move;user-select:none}
-    #fcevo header .wm{font-weight:800;font-size:12px;letter-spacing:.16em;text-transform:uppercase}
-    #fcevo header .dia{width:7px;height:7px;background:var(--acc);transform:rotate(45deg);display:inline-block}
-    /* small header "click to update" badge (shown when a newer version exists) */
+    #fcevo header{display:flex;align-items:center;gap:9px;padding:12px 14px;background:linear-gradient(135deg, #141b23 0%, #1c2736 100%);border-bottom:1px solid var(--line);cursor:move;user-select:none}
+    #fcevo header .wm{font-weight:800;font-size:12.5px;letter-spacing:.06em;text-transform:uppercase}
+    #fcevo header .dia{width:7px;height:7px;background:var(--acc);transform:rotate(45deg);display:inline-block;box-shadow:0 0 8px var(--acc)}
     #fcevo .upd{font:700 10px/1 var(--grot);color:var(--acc-ink);background:var(--acc);padding:3px 6px;border-radius:3px;text-decoration:none;white-space:nowrap;margin-left:4px}
     #fcevo .upd:hover{filter:brightness(1.1)}
-    /* centered dismissible popup — for a custom broadcast message */
-    #fcevo .notice-overlay{position:absolute;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;padding:18px;background:rgba(2,6,10,.66)}
-    #fcevo .notice-card{max-width:290px;display:flex;flex-direction:column;gap:13px;text-align:center;
+    #fcevo .notice-overlay{position:absolute;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;padding:18px;background:rgba(2,6,10,.7)}
+    #fcevo .notice-card{max-width:320px;display:flex;flex-direction:column;gap:13px;text-align:center;
       background:var(--char);border:1px solid var(--acc);border-radius:10px;box-shadow:0 22px 54px -14px #000;padding:17px 16px 15px}
     #fcevo .notice-card .notice-title{color:var(--bone);font:800 15px/1.3 var(--grot)}
     #fcevo .notice-card .notice-title:empty{display:none}
@@ -1174,37 +1161,34 @@
     #fcevo .notice-card .notice-x{align-self:center;background:var(--acc);color:var(--acc-ink);border:0;border-radius:6px;padding:8px 18px;cursor:pointer;font:700 12px/1 var(--grot)}
     #fcevo .notice-card .notice-x:hover{filter:brightness(1.08)}
     #fcevo header .sp{flex:1}
-    #fcevo header button{background:transparent;color:var(--ash);border:1px solid var(--line2);width:26px;height:24px;padding:0;cursor:pointer;font:600 13px/1 var(--grot);display:flex;align-items:center;justify-content:center}
+    #fcevo header button{background:transparent;color:var(--ash);border:1px solid var(--line2);width:26px;height:24px;border-radius:4px;padding:0;cursor:pointer;font:600 13px/1 var(--grot);display:flex;align-items:center;justify-content:center;transition:all .15s}
     #fcevo header button:hover{color:var(--ink);background:var(--acc);border-color:var(--acc)}
-    #fcevo header button[data-act="close"]:hover{color:#160b09;background:var(--bad);border-color:var(--bad)}
+    #fcevo header button[data-act="close"]:hover{color:#fff;background:var(--bad);border-color:var(--bad)}
     #fcevo .chev{pointer-events:none;transform:rotate(0);transition:transform .32s cubic-bezier(.2,.7,.2,1)}
-    #fcevo .setpanel{position:absolute;top:44px;right:12px;z-index:6;background:var(--char);border:1px solid var(--line2);padding:10px 12px;display:flex;flex-direction:column;gap:9px;box-shadow:0 16px 38px -14px #000;font:11px/1.3 var(--mono);color:var(--ash);text-transform:uppercase;letter-spacing:.06em}
-    #fcevo .setpanel label{display:flex;align-items:center;gap:7px;white-space:nowrap;cursor:pointer}
+    #fcevo .setpanel{position:absolute;top:44px;right:12px;z-index:6;background:var(--char);border:1px solid var(--line2);border-radius:8px;padding:12px 14px;display:flex;flex-direction:column;gap:10px;box-shadow:0 16px 38px -14px #000;font:11px/1.3 var(--mono);color:var(--ash);text-transform:uppercase;letter-spacing:.06em}
+    #fcevo .setpanel label{display:flex;align-items:center;gap:8px;white-space:nowrap;cursor:pointer}
     #fcevo .setpanel input[type=checkbox]{accent-color:var(--acc);cursor:pointer;margin:0}
-    #fcevo .setpanel input[type=number]{font-family:var(--mono);background:var(--ink);color:var(--bone);border:1px solid var(--line2);padding:2px 4px}
+    #fcevo .setpanel input[type=number]{font-family:var(--mono);background:var(--ink);color:var(--bone);border:1px solid var(--line2);border-radius:4px;padding:3px 6px}
     #fcevo .setfoot{border-top:1px solid var(--line2);margin-top:3px;padding-top:8px;font-size:11px;color:var(--ash)}
     #fcevo .setfoot a{color:var(--acc);text-decoration:none}
     #fcevo .setfoot a:hover{text-decoration:underline}
     #fcevo.min .chev{transform:rotate(180deg)}
-    #fcevo .body{padding:11px 13px;overflow:auto;display:flex;flex-direction:column;gap:10px}
-    /* collapsed = just the title bar: no body, no mode tabs, shrink to content width */
-    #fcevo.min{width:auto}
-    #fcevo.min .body,#fcevo.min .modetabs{display:none}
+    #fcevo .body{padding:12px 14px;overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column;gap:12px}
+    #fcevo.min{width:auto;resize:none}
+    #fcevo.min .body{display:none}
     #fcevo.min header{border-bottom:0}
-    #fcevo input,#fcevo select{background:var(--ink);border:1px solid var(--line2);color:var(--bone);border-radius:0;padding:6px 8px;font:11px/1.3 var(--grot);accent-color:var(--acc)}
-    #fcevo input:focus,#fcevo select:focus{outline:none;border-color:var(--acc)}
+    #fcevo input,#fcevo select{background:var(--ink);border:1px solid var(--line2);color:var(--bone);border-radius:6px;padding:7px 9px;font:12px/1.3 var(--grot);accent-color:var(--acc);transition:border-color .15s}
+    #fcevo input:focus,#fcevo select:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 2px var(--acc-glow)}
     #fcevo input::placeholder{color:var(--ash)}
     #fcevo input[type=text]{width:100%}
-    #fcevo .row{display:flex;gap:6px;align-items:center}
-    #fcevo .srow{align-items:stretch}
-    #fcevo .srow .rarbtn{display:flex;align-items:center}
+    #fcevo .row{display:flex;gap:7px;align-items:center}
     #fcevo .sec{background:transparent;border:0;padding:0}
-    #fcevo .sec h4{margin:0 0 11px;font:600 10px/1 var(--mono);color:var(--ash);text-transform:uppercase;letter-spacing:.2em;
-      display:flex;align-items:baseline;gap:9px;padding-bottom:9px;border-bottom:1px solid var(--line)}
-    #fcevo .sec h4 .ix{color:var(--acc);font-weight:700;letter-spacing:.06em}
-    #fcevo .rhint{padding:8px 9px;font:10px/1.4 var(--mono);text-transform:uppercase;letter-spacing:.1em;color:var(--ash)}
-    #fcevo .rarpanel{position:fixed;z-index:2147483647;display:none;flex-direction:column;max-height:300px;overflow:hidden;
-      background:var(--char);border:1px solid var(--line2);box-shadow:0 20px 46px -18px #000}
+    #fcevo .sec h4{margin:0 0 9px;font:700 10.5px/1 var(--mono);color:var(--ash);text-transform:uppercase;letter-spacing:.12em;
+      display:flex;align-items:center;gap:8px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+    #fcevo .sec h4 .ix{color:var(--acc);font-weight:800;letter-spacing:.06em}
+    #fcevo .rhint{padding:8px 9px;font:10.5px/1.4 var(--mono);text-transform:uppercase;letter-spacing:.06em;color:var(--ash)}
+    #fcevo .rarpanel{position:fixed;z-index:2147483647;display:none;flex-direction:column;max-height:300px;overflow-y:auto;
+      background:var(--char);border:1px solid var(--line2);border-radius:8px;box-shadow:0 20px 46px -18px #000}
     #fcevo .rarpanel.open{display:flex}
     #fcevo .rarhead{flex:none;display:flex;flex-direction:column;gap:7px;padding:8px;border-bottom:1px solid var(--line2)}
     #fcevo .rarsearch{width:100%}
@@ -1215,141 +1199,127 @@
     #fcevo .rarpanel label:hover{background:var(--char2)}
     #fcevo .rarpanel label .rc{margin-left:auto;color:var(--ash);font:10px/1 var(--mono);font-variant-numeric:tabular-nums}
     #fcevo input[type=checkbox]{width:14px;height:14px;padding:0;border:0;background:none;accent-color:var(--acc);cursor:pointer;flex:none}
-    #fcevo .pr{display:flex;align-items:center;gap:9px;padding:8px 6px;border:0;border-bottom:1px solid var(--line);cursor:pointer;background:transparent}
+    #fcevo .plist{display:flex;flex-direction:column;max-height:190px;overflow-y:auto;overflow-x:hidden;margin-top:8px;border:1px solid var(--line);border-radius:6px;background:rgba(10,14,19,0.4)}
+    #fcevo .pr{display:flex;align-items:center;gap:9px;padding:8px 9px;border:0;border-bottom:1px solid var(--line);cursor:pointer;background:transparent;transition:background .12s}
+    #fcevo .pr:last-child{border-bottom:0}
     #fcevo .pr:hover{background:var(--char2)}
-    #fcevo .pr:focus{outline:none;background:var(--char2);box-shadow:inset 2px 0 0 var(--acc)}
+    #fcevo .pr:focus{outline:none;background:var(--char2);box-shadow:inset 3px 0 0 var(--acc)}
+    #fcevo .pr.on{background:var(--char2);box-shadow:inset 3px 0 0 var(--acc)}
+    #fcevo .pr.hasps .nm{color:var(--warn)}
     #fcevo .pr .ov{font:800 15px/1 var(--grot);color:var(--bone);min-width:26px;text-align:center;font-variant-numeric:tabular-nums}
     #fcevo .pr .nm{flex:1;font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-    #fcevo .pr .gk{font:10px/1.5 var(--grot);color:var(--acc);border:1px solid var(--line2);padding:1px 5px}
+    #fcevo .pr .gk{font:10px/1.5 var(--grot);color:var(--acc);border:1px solid var(--line2);padding:1px 5px;border-radius:3px}
     #fcevo .pr .psc{display:flex;gap:5px;white-space:nowrap;font-family:var(--mono);flex:none}
-    #fcevo .pr .pchip{font-size:10px;font-weight:700;padding:1px 5px;border:1px solid;font-variant-numeric:tabular-nums}
-    #fcevo .pr .pchip.room{color:var(--good);border-color:#2f5a2a}
-    #fcevo .pr .pchip.full{color:var(--bad);border-color:#5a2b24}
-    #fcevo .card{display:flex;gap:13px;align-items:center}
-    #fcevo .card .ov{font:800 30px/.85 var(--grot);color:var(--bone);min-width:44px;text-align:left;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
-    #fcevo .card .meta{flex:1}
-    #fcevo .card .meta .pn{font-weight:800;font-size:15px;letter-spacing:-.01em}
-    #fcevo .caps{display:flex;gap:0;margin-top:11px;border:1px solid var(--line)}
-    #fcevo .cap{flex:1;background:transparent;border:0;border-right:1px solid var(--line);padding:7px 8px;text-align:left}
-    #fcevo .cap:last-child{border-right:0}
-    #fcevo .cap b{font:800 17px/1 var(--grot);font-variant-numeric:tabular-nums}#fcevo .cap.full b{color:var(--bad)}
-    #fcevo .cap small{color:var(--ash);display:block;font:10.5px/1.5 var(--grot)}
-    /* face-stat strip (PAC/SHO/… or GK DIV/HAN/…) shown on a selected/queued player */
-    #fcevo .statrow{display:flex;gap:0;margin-top:10px;border:1px solid var(--line)}
+    #fcevo .pr .pchip{font-size:10px;font-weight:700;padding:1px 5px;border:1px solid;border-radius:3px;font-variant-numeric:tabular-nums}
+    #fcevo .pr .pchip.room{color:var(--good);border-color:#2f5a2a;background:rgba(47,90,42,0.15)}
+    #fcevo .pr .pchip.full{color:var(--bad);border-color:#5a2b24;background:rgba(90,43,36,0.15)}
+    #fcevo .statrow{display:flex;gap:0;margin-top:9px;border:1px solid var(--line);border-radius:6px;overflow:hidden;background:var(--char)}
     #fcevo .statrow .stat{flex:1;text-align:center;padding:5px 2px;border-right:1px solid var(--line);min-width:0}
     #fcevo .statrow .stat:last-child{border-right:0}
-    #fcevo .statrow .stat b{display:block;font:800 14px/1 var(--grot);color:var(--bone);font-variant-numeric:tabular-nums}
-    #fcevo .statrow .stat small{display:block;font-size:9.5px;color:var(--ash);margin-top:3px}
+    #fcevo .statrow .stat b{display:block;font:800 13.5px/1 var(--grot);color:var(--bone);font-variant-numeric:tabular-nums}
+    #fcevo .statrow .stat small{display:block;font-size:9px;color:var(--ash);margin-top:2px}
     #fcevo .statrow .stat.hi b{color:var(--good)}
     #fcevo .statrow .stat.lo b{color:var(--ash)}
-    #fcevo .qi .statrow{margin-top:7px}
-    #fcevo .qi .statrow .stat b{font-size:12.5px}
-    #fcevo .modetabs{display:flex;gap:0;padding:0 12px;border-bottom:1px solid var(--line);background:var(--char)}
-    #fcevo .modetabs button{flex:1;background:transparent;border:0;border-bottom:2px solid transparent;color:var(--ash);padding:9px 6px;cursor:pointer;
-      font:700 11px/1 var(--grot);text-transform:uppercase;letter-spacing:.16em;margin-bottom:-1px}
-    #fcevo .modetabs button:hover{color:var(--bone)}
-    #fcevo .modetabs button.on{color:var(--bone);border-bottom-color:var(--acc)}
-    #fcevo .plist{display:flex;flex-direction:column;max-height:210px;overflow-y:auto;margin-top:8px;border-top:1px solid var(--line)}
-    #fcevo .plist .pr input{margin:0 2px 0 0;cursor:pointer;accent-color:var(--acc)}
-    #fcevo .pr.hasps .nm{color:var(--warn)}
-    #fcevo .pr.on{background:var(--char2);box-shadow:inset 2px 0 0 var(--acc)}
-    #fcevo .rolechip{font:10px/1.4 var(--mono);color:var(--good);border:1px solid var(--line2);padding:1px 5px;white-space:nowrap;text-transform:uppercase;letter-spacing:.04em;min-width:0;overflow:hidden;text-overflow:ellipsis}
-    #fcevo .tabs{display:flex;gap:0;border-bottom:1px solid var(--line)}
-    #fcevo .tabs button{flex:1;background:transparent;border:0;border-bottom:2px solid transparent;color:var(--ash);padding:8px 6px;cursor:pointer;
-      font:600 10px/1 var(--mono);text-transform:uppercase;letter-spacing:.12em;margin-bottom:-1px}
+    #fcevo .rolebox{background:var(--char);border:1px solid var(--line);border-radius:8px;padding:10px 11px;display:flex;flex-direction:column;gap:8px}
+    #fcevo .tabs{display:flex;gap:0;border-bottom:1px solid var(--line);margin-top:6px}
+    #fcevo .tabs button{flex:1;background:transparent;border:0;border-bottom:2px solid transparent;color:var(--ash);padding:9px 6px;cursor:pointer;
+      font:700 10.5px/1 var(--mono);text-transform:uppercase;letter-spacing:.08em;margin-bottom:-1px;transition:all .15s}
     #fcevo .tabs button:hover{color:var(--bone)}
     #fcevo .tabs button.on{color:var(--bone);border-bottom-color:var(--acc)}
     #fcevo .tabs button.disabled{opacity:.38;cursor:help}
     #fcevo .tabs button.disabled:hover{color:var(--ash)}
-    #fcevo .queue-list{display:flex;flex-direction:column;gap:8px;max-height:340px;overflow-y:auto}
-    #fcevo .qi{background:var(--char);border:1px solid var(--line);padding:7px 8px}
-    #fcevo .qi-head{display:flex;align-items:center;gap:8px}
-    #fcevo .qi-head .ov{font:800 14px/1 var(--grot);color:var(--bone);min-width:26px;font-variant-numeric:tabular-nums}
-    #fcevo .qi-head .nm{flex:1;font-size:12px;font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-    #fcevo .qi-head .rolechip{flex:none}
-    #fcevo .qi .qx{background:none;border:0;color:var(--ash);cursor:pointer;font-size:14px;padding:0 2px;line-height:1}
-    #fcevo .qi .qx:hover{color:var(--bad)}
-    #fcevo .qps{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}
-    #fcevo .qps .chip{width:24px;height:24px;display:flex;align-items:center;justify-content:center;border-radius:6px;border:1px solid var(--line2);background:var(--char2);color:var(--bone)}
-    #fcevo .qps .chip i{font-family:'UltimateTeam-Icons',sans-serif;font-style:normal;font-weight:400;font-size:14px;line-height:1}
-    #fcevo .qps .chip.noglyph::after{content:attr(data-ini);font:800 8px var(--grot);color:var(--bone)}
-    #fcevo .qps .chip.ic{border-color:#7d6320;background:rgba(155,120,25,.14);color:var(--gold1)}
-    #fcevo .grid{display:flex;flex-direction:column;gap:8px}
-    #fcevo .gcat-h{font:700 10.5px/1 var(--grot);color:var(--acc);margin:0 0 5px;padding-bottom:4px;border-bottom:1px solid var(--line)}
-    #fcevo .gcat-row{display:flex;flex-wrap:wrap;gap:3px 2px}
-    #fcevo .mlist{display:flex;flex-direction:column;gap:0;max-height:230px;overflow:auto}
-    #fcevo .mrow{display:grid;grid-template-columns:1fr 44px 26px;grid-template-areas:"n bar sc" "why bar sc";gap:0 9px;align-items:center;padding:7px 2px;border:0;border-bottom:1px solid var(--line)}
-    #fcevo .mrow.dim{opacity:.42}
-    #fcevo .mrow .mn{grid-area:n;font-size:12px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    #fcevo .mrow .mbar{grid-area:bar;height:3px;background:var(--line);overflow:hidden;align-self:center}
-    #fcevo .mrow .mbar i{display:block;height:100%;background:var(--acc)}
-    #fcevo .mrow .msc{grid-area:sc;text-align:right;font:800 15px/1 var(--grot);color:var(--bone);font-variant-numeric:tabular-nums}
-    #fcevo .mrow .mwhy{grid-area:why;font:9px/1.3 var(--mono);color:var(--ash);text-transform:uppercase;letter-spacing:.06em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-	#fcevo .qedit{
-		display:flex;
-		flex-direction:column;
-		gap:4px;
-		margin-top:8px;
-	}
+    
+    /* PlayStyle search box and dropdown */
+    #fcevo .ps-search-wrap{position:relative;margin:8px 0 4px}
+    #fcevo .ps-search-input{width:100%;background:var(--char);border:1px solid var(--line2);color:var(--bone);border-radius:6px;padding:6px 9px;font:11.5px/1.3 var(--grot)}
+    #fcevo .ps-search-input:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 2px var(--acc-glow)}
+    #fcevo .ps-quick-list{position:absolute;top:calc(100% + 2px);left:0;right:0;z-index:25;background:var(--char);border:1px solid var(--line2);border-radius:6px;max-height:160px;overflow-y:auto;box-shadow:0 12px 28px -8px #000}
+    #fcevo .ps-quick-item{display:flex;align-items:center;gap:8px;padding:6px 10px;cursor:pointer;border-bottom:1px solid var(--line);font-size:11.5px;color:var(--bone)}
+    #fcevo .ps-quick-item:last-child{border-bottom:0}
+    #fcevo .ps-quick-item:hover{background:var(--char2);color:var(--acc)}
+    #fcevo .ps-quick-item.sel{opacity:.5}
+    #fcevo .ps-quick-item .qbadge{font:700 9px/1 var(--mono);padding:2px 5px;border-radius:3px;background:var(--ink);border:1px solid var(--line2);color:var(--ash)}
+    #fcevo .ps-quick-item.psp .qbadge{color:var(--gold1);border-color:#7d6320}
 
-	#fcevo .qedit-row{
-		display:flex;
-		align-items:center;
-		gap:8px;
-	}
+    /* Selected PlayStyles strip with Drag-and-Drop Reordering & Cursor */
+    #fcevo .sel-ps-strip-wrap{margin:6px 0 8px}
+    #fcevo .sel-ps-strip-hdr{display:flex;align-items:center;justify-content:space-between;font:700 9.5px/1 var(--mono);color:var(--ash);text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px}
+    #fcevo .sel-ps-strip-hdr .order-hint{color:var(--acc);font-weight:600;font-size:9px}
+    #fcevo .sel-ps-strip{display:flex;flex-wrap:wrap;gap:2px;padding:6px 8px;background:rgba(20,27,35,0.7);border:1px solid var(--line);border-radius:6px;min-height:34px;align-items:center;outline:none}
+    #fcevo .sel-chip{display:inline-flex;align-items:center;gap:4px;font:700 10.5px/1 var(--grot);padding:4px 6px;border-radius:5px;background:var(--char2);border:1px solid var(--line2);color:var(--bone);user-select:none;cursor:grab;transition:transform .12s, box-shadow .12s, opacity .12s}
+    #fcevo .sel-chip:active{cursor:grabbing}
+    #fcevo .sel-chip.dragging{opacity:.4;transform:scale(0.95)}
+    #fcevo .sel-chip.drag-over{border-color:var(--acc);box-shadow:0 0 0 2px var(--acc-glow);transform:scale(1.04)}
+    #fcevo .sel-chip .drag-grip{color:var(--ash);font-size:10px;line-height:1;opacity:.6;cursor:grab}
+    #fcevo .sel-chip .chip-num{font:800 9px/1 var(--mono);background:var(--ink);border:1px solid var(--line2);padding:1.5px 3.5px;border-radius:3px;color:var(--acc)}
+    #fcevo .sel-chip.psp{border-color:#7d6320;background:rgba(155,120,25,.18);color:var(--gold1)}
+    #fcevo .sel-chip.psp .chip-num{color:var(--gold1);border-color:#7d6320}
+    #fcevo .sel-chip .chip-arrow{background:none;border:0;color:var(--ash);cursor:pointer;font-size:9px;line-height:1;padding:2px 3px;border-radius:2px;display:inline-flex;align-items:center;justify-content:center;transition:all .12s}
+    #fcevo .sel-chip .chip-arrow:hover{color:var(--acc);background:rgba(51,214,193,0.15)}
+    #fcevo .sel-chip .chip-x{background:none;border:0;color:var(--ash);cursor:pointer;font-size:11px;line-height:1;padding:1px 3px;margin-left:1px;border-radius:2px;display:inline-flex;align-items:center;justify-content:center;transition:all .12s}
+    #fcevo .sel-chip .chip-x:hover{color:#fff;background:var(--bad)}
 
-	#fcevo .qedit-row label{
-		width:54px;
-		color:var(--ash);
-		font:10px/1 var(--mono);
-		text-transform:uppercase;
-	}
+    /* Cursor & Temporary Reserve Area Styling */
+    #fcevo .cursor-pos-badge{background:var(--char2);border:1px solid var(--acc);color:var(--acc);font:800 9px/1 var(--mono);padding:2.5px 6px;border-radius:4px;letter-spacing:.05em}
+    #fcevo .reserve-btn,#fcevo .reserve-action-btn{background:rgba(46,165,255,0.12);border:1px solid var(--acc);color:var(--acc);font:700 9px/1 var(--mono);padding:3px 7px;border-radius:4px;cursor:pointer;transition:all .15s}
+    #fcevo .reserve-btn:hover,#fcevo .reserve-action-btn:hover{background:rgba(46,165,255,0.25);box-shadow:0 0 8px var(--acc-glow)}
 
-	#fcevo .qedit-row select{
-		flex:1;
-		padding:4px 6px;
-		font-size:11px;
-	}
-    /* Evo icons: the PlayStyle glyph is the star — big icon in a light rounded
-       container (thin border, subtle fill). PlayStyle+ carries a gold accent so
-       it still reads apart from base; owned dims; selected lights up with a glow. */
-    #fcevo .ec{position:relative;width:50px;padding:3px 1px 2px;cursor:pointer;text-align:center;transition:background .1s}
+    #fcevo .cursor-spot{display:inline-flex;align-items:center;justify-content:center;width:10px;height:28px;cursor:pointer;position:relative;margin:0 -1px;z-index:2;transition:all .15s}
+    #fcevo .cursor-spot .cursor-line{width:2px;height:18px;background:rgba(255,255,255,0.15);border-radius:1px;transition:all .15s}
+    #fcevo .cursor-spot:hover .cursor-line{background:var(--acc);height:24px;box-shadow:0 0 6px var(--acc)}
+    #fcevo .cursor-spot.active .cursor-line{width:3px;height:26px;background:var(--acc);box-shadow:0 0 10px var(--acc), 0 0 2px #fff;animation:cursorPulse 1.5s infinite}
+    #fcevo .cursor-spot.active::before{content:"▼";position:absolute;top:-8px;font-size:8px;color:var(--acc);line-height:1}
+    #fcevo .cursor-spot.drag-over .cursor-line{background:var(--acc);height:26px;box-shadow:0 0 12px var(--acc)}
+    @keyframes cursorPulse { 0%,100%{opacity:1} 50%{opacity:0.6} }
+
+    #fcevo .reserve-strip-wrap{margin:6px 0 8px;padding:6px 8px;background:rgba(15,22,30,0.85);border:1px dashed #3a4b5c;border-radius:6px}
+    #fcevo .reserve-strip-hdr{display:flex;align-items:center;justify-content:space-between;font:700 9.5px/1 var(--mono);color:var(--ash);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px}
+    #fcevo .reserve-strip{display:flex;flex-wrap:wrap;gap:5px;min-height:30px;align-items:center;padding:4px;border-radius:4px;background:rgba(0,0,0,0.2);transition:all .15s}
+    #fcevo .reserve-strip.drag-over{border:1px solid var(--acc);background:rgba(46,165,255,0.1)}
+    #fcevo .reserve-chip{display:inline-flex;align-items:center;gap:4px;font:700 10px/1 var(--grot);padding:3px 6px;border-radius:4px;background:var(--char);border:1px dashed var(--line2);color:var(--ash);user-select:none;cursor:grab;transition:all .12s}
+    #fcevo .reserve-chip:hover{color:var(--bone);border-color:var(--acc)}
+    #fcevo .reserve-chip.psp{border-color:#7d6320;color:var(--gold1)}
+    #fcevo .reserve-chip .chip-rest{background:none;border:0;color:var(--acc);cursor:pointer;font:800 9px/1 var(--mono);padding:2px 4px;border-radius:3px;transition:all .12s}
+    #fcevo .reserve-chip .chip-rest:hover{background:rgba(51,214,193,0.2)}
+
+    /* Grid & Icons (25% bigger, modern and readable) */
+    #fcevo .grid{display:flex;flex-direction:column;gap:9px;max-height:280px;overflow-y:auto;overflow-x:hidden;padding-right:2px}
+    #fcevo .gcat-h{font:700 11px/1 var(--grot);color:var(--acc);margin:0 0 4px;padding-bottom:3px;border-bottom:1px solid var(--line)}
+    #fcevo .gcat-row{display:flex;flex-wrap:wrap;gap:4px}
+    #fcevo .ec{position:relative;width:48px;padding:4px 2px 3px;cursor:pointer;text-align:center;border-radius:6px;transition:background .12s}
     #fcevo .ec:hover{background:var(--char2)}
     #fcevo .ec.dis{opacity:.24;cursor:not-allowed}
-    #fcevo .ec.owned{opacity:.5}
+    #fcevo .ec.owned{opacity:.45}
     #fcevo .noglyph i{display:none}
     #fcevo .ec .ico{position:relative;width:38px;height:38px;margin:0 auto 3px;display:flex;align-items:center;justify-content:center;
-      border-radius:9px;border:1px solid var(--line2);background:var(--char2)}
-    #fcevo .ec .ico i{font-family:'UltimateTeam-Icons',sans-serif;font-style:normal;font-weight:400;font-size:23px;line-height:1;color:var(--bone)}
-    #fcevo .ec .ico.noglyph::after{content:attr(data-ini);font:800 13px var(--grot);color:var(--bone)}
-    /* PlayStyle+ = gold accent */
+      border-radius:8px;border:1px solid var(--line2);background:var(--char2);transition:all .15s}
+    #fcevo .ec .ico i{font-family:'UltimateTeam-Icons',sans-serif;font-style:normal;font-weight:400;font-size:22px;line-height:1;color:var(--bone)}
+    #fcevo .ec .ico.noglyph::after{content:attr(data-ini);font:800 12px var(--grot);color:var(--bone)}
     #fcevo .ec.psp .ico{border-color:#7d6320;background:rgba(155,120,25,.14)}
     #fcevo .ec.psp .ico i,#fcevo .ec.psp .ico.noglyph::after{color:var(--gold1)}
-    /* owned recedes */
     #fcevo .ec.owned .ico i,#fcevo .ec.owned .ico.noglyph::after{color:var(--ash)}
-    /* selected lights up */
-    #fcevo .ec.sel .ico{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc) inset,0 0 9px -2px var(--acc)}
-    #fcevo .ec.psp.sel .ico{border-color:var(--gold1);box-shadow:0 0 0 1px var(--gold1) inset,0 0 9px -2px var(--gold1)}
-    #fcevo .ec .nm{font-size:10.5px;line-height:1.15;color:#c2ccd6;max-height:22px;overflow:hidden}
-    #fcevo .ec.sel .nm{color:var(--bone)}#fcevo .ec.psp.sel .nm{color:var(--gold1)}
-    /* owned marker: a small recessed check badge */
-    #fcevo .ec .own{position:absolute;top:1px;right:8px;width:14px;height:14px;background:var(--ink);border:1px solid var(--line2);border-radius:4px;
-      display:flex;align-items:center;justify-content:center;font:9px/1 var(--grot);color:var(--ash)}
+    #fcevo .ec.sel .ico{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc) inset,0 0 11px -2px var(--acc)}
+    #fcevo .ec.psp.sel .ico{border-color:var(--gold1);box-shadow:0 0 0 1px var(--gold1) inset,0 0 11px -2px var(--gold1)}
+    #fcevo .ec.sug-pick .ico{border-color:rgba(51,214,193,0.7);box-shadow:0 0 9px rgba(51,214,193,0.3)}
+    #fcevo .ec.sug-pick.psp .ico{border-color:rgba(246,216,121,0.8);box-shadow:0 0 9px rgba(246,216,121,0.35)}
+    #fcevo .ec .sug-badge{position:absolute;top:1px;left:3px;font-size:9px;line-height:1;filter:drop-shadow(0 0 3px var(--acc))}
+    #fcevo .ec .nm{font-size:9.5px;line-height:1.15;color:#c2ccd6;max-height:22px;overflow:hidden;word-break:break-word}
+    #fcevo .ec.sel .nm{color:var(--bone);font-weight:700}#fcevo .ec.psp.sel .nm{color:var(--gold1);font-weight:700}
+    #fcevo .ec .own{position:absolute;top:1px;right:3px;width:13px;height:13px;background:var(--ink);border:1px solid var(--line2);border-radius:3px;
+      display:flex;align-items:center;justify-content:center;font:8px/1 var(--grot);color:var(--ash)}
     #fcevo .ec .own::after{content:"\\2713"}
-    /* preview: player's current playstyles — same light container, matched style */
-    #fcevo .psrow{display:flex;flex-wrap:wrap;gap:7px;margin-top:10px}
-    #fcevo .psrow .chip{width:32px;height:32px;display:flex;align-items:center;justify-content:center;
-      border-radius:8px;border:1px solid var(--line2);background:var(--char2);color:var(--bone)}
-    #fcevo .psrow .chip i{font-family:'UltimateTeam-Icons',sans-serif;font-style:normal;font-weight:400;font-size:19px;line-height:1}
-    #fcevo .psrow .chip.noglyph::after{content:attr(data-ini);font:800 11px var(--grot);color:var(--bone)}
+    #fcevo .psrow{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+    #fcevo .psrow .chip{width:29px;height:29px;display:flex;align-items:center;justify-content:center;
+      border-radius:7px;border:1px solid var(--line2);background:var(--char2);color:var(--bone)}
+    #fcevo .psrow .chip i{font-family:'UltimateTeam-Icons',sans-serif;font-style:normal;font-weight:400;font-size:16px;line-height:1}
+    #fcevo .psrow .chip.noglyph::after{content:attr(data-ini);font:800 10px var(--grot);color:var(--bone)}
     #fcevo .psrow .chip.ic{border-color:#7d6320;background:rgba(155,120,25,.14);color:var(--gold1)}
-    /* Tradeable / Untradeable Badges */
     .trd-badge{font:700 8.5px/1 var(--mono);padding:1.5px 4px;border-radius:3px;text-transform:uppercase;flex:none;display:inline-block;margin-left:4px;vertical-align:middle}
     .trd-badge.trd{background:rgba(62,207,106,0.15);color:#3ecf6a;border:1px solid rgba(62,207,106,0.3)}
     .trd-badge.untr{background:rgba(224,82,82,0.15);color:#e05252;border:1px solid rgba(224,82,82,0.3)}
     .pos-chip{font:800 8.5px/1 var(--mono);padding:1.5px 4px;border-radius:3px;background:rgba(46,165,255,0.15);color:#2ea5ff;border:1px solid rgba(46,165,255,0.3);margin-left:4px;vertical-align:middle;display:inline-block;text-transform:uppercase}
     #fcevo .trdbtn, #fcevo .psfilterbtn{display:flex;align-items:center;white-space:nowrap}
-    #fcevo .view-btn{background:transparent;border:1px solid var(--line2);color:var(--ash);font:600 9.5px/1 var(--mono);padding:3px 6px;border-radius:3px;cursor:pointer;margin-left:auto;flex:none;transition:all .15s}
+    #fcevo .view-btn{background:transparent;border:1px solid var(--line2);color:var(--ash);font:600 9.5px/1 var(--mono);padding:3px 6px;border-radius:4px;cursor:pointer;margin-left:auto;flex:none;transition:all .15s}
     #fcevo .view-btn:hover{color:var(--acc);border-color:var(--acc);background:rgba(46,165,255,0.12)}
     
     /* Attribute Viewer Modal Overlay */
@@ -1385,31 +1355,27 @@
     .ps-grid{display:flex;flex-wrap:wrap;gap:5px}
     .ps-item{display:flex;align-items:center;gap:5px;background:#1c2632;border:1px solid #263445;padding:3px 7px;border-radius:5px;font-size:10.5px}
     .ps-item.plus{border-color:#7d6320;background:rgba(155,120,25,.18);color:#e5b638}
-    #fcevo .opts{display:flex;gap:14px;align-items:center;flex-wrap:wrap;font:10px/1.4 var(--mono);text-transform:uppercase;letter-spacing:.08em;color:var(--ash)}
-    #fcevo .opts input[type=number]{font-family:var(--mono)}
-    #fcevo .go{background:var(--acc);color:var(--acc-ink);border:0;border-radius:0;padding:12px;cursor:pointer;
-      font:800 11px/1 var(--grot);text-transform:uppercase;letter-spacing:.16em}
-    #fcevo .go:hover{filter:brightness(1.06)}
-    #fcevo .go:disabled{opacity:.4}#fcevo .stop{background:var(--bad);color:#160b09}
-    #fcevo .go.armed{background:var(--warn);color:#211803}
-    #fcevo .mini{background:transparent;color:var(--ash);border:1px solid var(--line2);border-radius:0;padding:6px 9px;cursor:pointer;
-      font:600 10px/1 var(--mono);text-transform:uppercase;letter-spacing:.1em;white-space:nowrap}
-    #fcevo .mini:hover{color:var(--bone);border-color:var(--ash)}
+
+    #fcevo .opts{display:flex;gap:14px;align-items:center;flex-wrap:wrap;font:10.5px/1.4 var(--mono);text-transform:uppercase;letter-spacing:.06em;color:var(--ash)}
+    #fcevo .go{background:linear-gradient(135deg, #1f6feb 0%, #33d6c1 100%);color:#fff;border:0;border-radius:6px;padding:12px;cursor:pointer;
+      font:800 12px/1 var(--grot);text-transform:uppercase;letter-spacing:.12em;box-shadow:0 4px 14px rgba(51,214,193,0.3);transition:all .15s}
+    #fcevo .go:hover{filter:brightness(1.1);box-shadow:0 6px 18px rgba(51,214,193,0.45)}
+    #fcevo .go:disabled{opacity:.4;cursor:not-allowed}#fcevo .stop{background:var(--bad);color:#fff}
+    #fcevo .mini{background:var(--char);color:var(--ash);border:1px solid var(--line2);border-radius:5px;padding:6px 10px;cursor:pointer;
+      font:600 10.5px/1 var(--mono);text-transform:uppercase;letter-spacing:.06em;white-space:nowrap;transition:all .15s}
+    #fcevo .mini:hover{color:var(--bone);border-color:var(--ash);background:var(--char2)}
+    #fcevo .mini.sugbtn{color:var(--acc);border-color:var(--acc);background:rgba(51,214,193,0.1)}
+    #fcevo .mini.sugbtn:hover{background:rgba(51,214,193,0.2)}
     #fcevo .mini.rmevo{color:var(--bad);border-color:#5a2b24}
-    #fcevo .mini.rmevo:hover{color:#160b09;background:var(--bad);border-color:var(--bad)}
-    #fcevo .mini.armed{color:#211803;background:var(--warn);border-color:var(--warn)}
-    #fcevo .status{font:12px/1.4 var(--grot);color:var(--ash);padding:3px 0 2px;min-height:18px;white-space:normal;overflow-wrap:anywhere}
+    #fcevo .mini.rmevo:hover{color:#fff;background:var(--bad);border-color:var(--bad)}
+    #fcevo .status{font:12px/1.4 var(--grot);color:var(--ash);padding:4px 0 2px;min-height:18px;white-space:normal;overflow-wrap:anywhere}
     #fcevo .status.ok{color:var(--good)}#fcevo .status.err{color:var(--bad)}#fcevo .status.warn{color:var(--warn)}#fcevo .status.head{color:var(--acc)}#fcevo .status.dim{color:var(--ash)}
     #fcevo .count{color:var(--bone);font-weight:700;font-variant-numeric:tabular-nums}#fcevo .count.over{color:var(--bad)}#fcevo .muted{color:var(--ash)}
-    #fcevo .clubstat{margin-top:8px;padding:7px 9px;font:10px/1.4 var(--mono);text-transform:uppercase;letter-spacing:.08em;background:var(--char);border:1px solid var(--line);border-left:2px solid var(--line2);cursor:pointer}
+    #fcevo .clubstat{margin-top:8px;padding:7px 10px;font:10px/1.4 var(--mono);text-transform:uppercase;letter-spacing:.08em;background:var(--char);border:1px solid var(--line);border-left:3px solid var(--line2);border-radius:4px;cursor:pointer}
     #fcevo .clubstat.load{color:var(--warn);border-left-color:var(--warn)}#fcevo .clubstat.ok{color:var(--good);border-left-color:var(--good)}#fcevo .clubstat.err{color:var(--bad);border-left-color:var(--bad)}
-    /* accent diamond = a Suggest pick; help badge */
-    #fcevo .sug{display:inline-block;width:6px;height:6px;background:var(--acc);transform:rotate(45deg);margin:0 3px 0 6px;vertical-align:middle}
-    #fcevo .tag-own{font:8px/1 var(--mono);text-transform:uppercase;letter-spacing:.1em;color:var(--ash);border:1px solid var(--line2);padding:1px 4px;margin-left:7px;vertical-align:middle}
-    /* tooltip (attached to body so the panel's overflow can't clip it) */
-    #fcevo-tip{position:fixed;z-index:2147483647;max-width:232px;background:#0b0f14;border:1px solid #394653;
-      padding:9px 11px;pointer-events:none;box-shadow:0 16px 38px -14px #000;font:11px/1.45 -apple-system,"Helvetica Neue",Arial,sans-serif;color:#c4ccd4}
-    #fcevo-tip b{display:block;font:700 10px/1.2 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.1em;text-transform:uppercase;color:#33d6c1;margin-bottom:5px}
+    #fcevo-tip{position:fixed;z-index:2147483647;max-width:260px;background:#0b0f14;border:1px solid #394653;border-radius:8px;
+      padding:9px 12px;pointer-events:none;box-shadow:0 16px 38px -14px #000;font:11.5px/1.45 var(--grot);color:#c4ccd4}
+    #fcevo-tip b{display:block;font:700 10.5px/1.2 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:#33d6c1;margin-bottom:5px}
     #fcevo-tip span{display:block}
     `;
     document.head.appendChild(s);
@@ -1420,7 +1386,15 @@
     const root = document.createElement("div");
     root.id = "fcevo";
     root.innerHTML = `
-      <header><b class="wm">Evo&nbsp;Helper <span style="font-size:9px;background:linear-gradient(135deg,#ec4899,#8b5cf6);color:#fff;padding:1px 5px;border-radius:4px;vertical-align:middle;margin-left:4px;font-weight:700;box-shadow:0 0 6px rgba(236,72,153,0.5);">v2.2.1</span></b><i class="dia" aria-hidden="true"></i><a class="upd" id="fcevo-upd" href="${INSTALL_URL}" target="_blank" rel="noopener noreferrer" title="New version available — click to update" style="display:none">⬆ update</a><span class="sp"></span><button data-act="settings" class="hbtn" title="Settings">⚙</button><button data-act="min" title="Collapse"><svg class="chev" viewBox="0 0 14 9" width="12" height="8" aria-hidden="true"><path d="M1 6.5L7 1.5L13 6.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button data-act="close" class="xbtn" title="Close (until page reload)">✕</button></header>
+      <header>
+        <b class="wm">Evo&nbsp;Helper <span style="font-size:9px;background:linear-gradient(135deg,#ec4899,#8b5cf6);color:#fff;padding:2px 6px;border-radius:10px;vertical-align:middle;margin-left:4px;font-weight:700;box-shadow:0 0 8px rgba(236,72,153,0.5);">v2.2.1</span></b>
+        <i class="dia" aria-hidden="true"></i>
+        <a class="upd" id="fcevo-upd" href="${INSTALL_URL}" target="_blank" rel="noopener noreferrer" title="New version available — click to update" style="display:none">⬆ update</a>
+        <span class="sp"></span>
+        <button data-act="settings" class="hbtn" title="Settings">⚙</button>
+        <button data-act="min" title="Collapse"><svg class="chev" viewBox="0 0 14 9" width="12" height="8" aria-hidden="true"><path d="M1 6.5L7 1.5L13 6.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button data-act="close" class="xbtn" title="Close (until page reload)">✕</button>
+      </header>
       <div class="notice-overlay" id="fcevo-notice" data-act="notice-hide" style="display:none"><div class="notice-card"><div class="notice-title" id="fcevo-notice-title"></div><div class="notice-body" id="fcevo-notice-body"></div><a class="notice-link" id="fcevo-notice-link" target="_blank" rel="noopener noreferrer" style="display:none"></a><button class="notice-x" data-act="notice-hide">Got it</button></div></div>
       <div class="setpanel" id="fcevo-settings" style="display:none">
         <label title="Add the player to each slot, then claim/finish it so the PlayStyle is locked in."><input type="checkbox" id="fcevo-claim" checked> claim &amp; finish</label>
@@ -1428,46 +1402,64 @@
         <label title="When on, the panel loads collapsed each time you open the web app."><input type="checkbox" id="fcevo-startmin"> start minimized</label>
         <div class="setfoot">${runningVersion() ? "v" + runningVersion() + " · " : ""}<a href="${REPO_URL}" target="_blank" rel="noopener noreferrer">GitHub&nbsp;↗</a></div>
       </div>
-      <div class="modetabs">
-        <button data-mode="single" class="on">Single</button>
-        <button data-mode="auto">Bulk</button>
-      </div>
       <div class="body">
         <div class="sec">
-          <h4><span class="ix">01</span> <span id="fcevo-pickhdr">Select from club</span></h4>
-          <div class="row srow">
-            <input type="text" id="fcevo-search" placeholder="search name or rarity (e.g. futties)…">
-            <button class="mini rarbtn" data-act="rar" id="fcevo-rarbtn">Rarity: all ▾</button>
-            <button class="mini trdbtn" data-act="trd" id="fcevo-trdbtn" title="Filter by Tradeable / Untradeable status">Trade: all ▾</button>
-            <button class="mini psfilterbtn" data-act="psfilter" id="fcevo-psfilterbtn" title="Filter by PlayStyles: All / Clean (0 PS) / Has PS">PS: all ▾</button>
+          <h4><span class="ix">01</span> Select Player from Club</h4>
+          <input type="text" id="fcevo-search" placeholder="search player name or rarity…">
+          <div class="row" style="margin-top:6px;gap:6px">
+            <button class="mini rarbtn" data-act="rar" id="fcevo-rarbtn" style="flex:1">Rarity: all ▾</button>
+            <button class="mini trdbtn" data-act="trd" id="fcevo-trdbtn" title="Filter by Tradeable / Untradeable status" style="flex:1">Trade: 🔒 UNT</button>
+            <button class="mini psfilterbtn" data-act="psfilter" id="fcevo-psfilterbtn" title="Filter by PlayStyles: All / Clean (0 PS) / Has PS" style="flex:1">PS: ⚪ 0 PS</button>
           </div>
           <div class="rarpanel" id="fcevo-rarpanel"></div>
           <div class="clubstat" id="fcevo-clubstat" data-act="reloadclub" title="Click to reload the club">Club: waiting for app…</div>
           <div class="plist" id="fcevo-list"></div>
         </div>
 
-        <div class="sec" id="fcevo-auto" style="display:none">
-          <h4>Queue · <span id="fcevo-qcount">0</span></h4>
-          <div class="queue-list" id="fcevo-qlist"></div>
-        </div>
-
         <div class="sec" id="fcevo-preview" style="display:none"></div>
 
         <div class="sec" id="fcevo-evosec">
-          <h4><span class="ix">02</span> Choose evolutions</h4>
-          <div class="row">
-            <select id="fcevo-pos" style="flex:1"></select>
-            <select id="fcevo-role" style="flex:1.3"></select>
-            <button class="mini" data-act="suggest" data-tip="Suggest|Preselects this role's recommended playstyles — the top 3 as PlayStyle+, the rest as basic — skipping any the player already owns and respecting the caps. Tweak freely afterward.">Suggest</button>
+          <h4><span class="ix">02</span> Position &amp; Role</h4>
+          <div id="fcevo-selplayer-banner" style="display:none;padding:7px 10px;border-radius:6px;background:rgba(51,214,193,0.12);border:1px solid rgba(51,214,193,0.35);margin-bottom:9px;font-size:11.5px;color:var(--bone);align-items:center;box-shadow:0 0 10px rgba(51,214,193,0.15)"></div>
+          <div class="rolebox">
+            <div class="row">
+              <select id="fcevo-pos" style="flex:1" title="Player Position"></select>
+              <select id="fcevo-role" style="flex:1.4" title="Tactical Role"></select>
+            </div>
+            <div class="row" style="gap:6px">
+              <button class="mini sugbtn" data-act="suggest" data-tip="Auto-Suggest|Recalculate recommended PlayStyles for this role — top 3/4 as PS+, rest as basic." style="flex:1.2">✨ Re-Suggest</button>
+              <button class="mini" data-act="togglesort" id="fcevo-sortbtn" title="Toggle sorting order: Category / Alphabetical A-Z" style="flex:1">Sort: Category ▾</button>
+              <button class="mini" data-act="clearsel" style="flex:1">Clear all</button>
+            </div>
           </div>
-          <div class="tabs" style="margin-top:9px">
+          <div class="tabs" style="margin-top:10px">
             <button data-tab="PS+">PlayStyle+ (36)</button>
             <button data-tab="PS">PlayStyle (36)</button>
             <button data-tab="GH4" class="gh4tab disabled" data-tip="4th PlayStyle+|FUTTIES, Glory Hunters, and special cards can hold a 4th PS+ — pick an eligible card to choose a 4th PS+.">4th PS+</button>
           </div>
-          <div class="row" style="margin:7px 0;justify-content:flex-end">
-            <button class="mini" data-act="none">Clear selection</button>
+
+          <div class="ps-search-wrap">
+            <input type="text" class="ps-search-input" id="fcevo-pssearch" placeholder="🔍 Type playstyle name to search/select (e.g. fin, tri, ant)…" autocomplete="off">
+            <div class="ps-quick-list" id="fcevo-psmatches" style="display:none"></div>
           </div>
+
+          <div class="sel-ps-strip-wrap" id="fcevo-selstrip-wrap" style="display:none">
+            <div class="sel-ps-strip-hdr">
+              <span>Apply Sequence (<span id="fcevo-sel-count">0</span>)</span>
+              <span class="cursor-pos-badge" id="fcevo-cursor-badge" title="Cursor position (use ◄/► arrow keys or click spots to move)">📍 Cursor: #0</span>
+              <button class="reserve-btn" data-act="mv-after-to-reserve" id="fcevo-mvafterbtn" title="Move all PlayStyles after cursor to Temporary Reserve" style="display:none">⬇ Move rest to Reserve</button>
+            </div>
+            <div class="sel-ps-strip" id="fcevo-selstrip" tabindex="0" title="Click spots or use ◄/► arrow keys to move cursor"></div>
+          </div>
+
+          <div class="reserve-strip-wrap" id="fcevo-reserve-wrap" style="display:none">
+            <div class="reserve-strip-hdr">
+              <span>📦 Temporary Reserve (<span id="fcevo-reserve-count">0</span>)</span>
+              <button class="reserve-action-btn" data-act="restore-all-reserve" title="Move all reserved PlayStyles back to active sequence">⬆ Restore All to Main</button>
+            </div>
+            <div class="reserve-strip" id="fcevo-reservestrip"></div>
+          </div>
+
           <div class="grid" id="fcevo-grid"></div>
         </div>
 
@@ -1476,7 +1468,6 @@
         </div>
         <div class="row">
           <button class="go" data-act="run" id="fcevo-runbtn" style="flex:1">Apply selected</button>
-          <button class="mini" data-act="clearsel" id="fcevo-clearsel" style="display:none">Clear</button>
           <button class="go stop" data-act="stop" style="display:none;flex:1">Stop</button>
         </div>
         <div class="status" id="fcevo-status">Ready.</div>
@@ -1492,13 +1483,17 @@
       psfilterbtn: q("#fcevo-psfilterbtn"),
       rarpanel: q("#fcevo-rarpanel"), clubstat: q("#fcevo-clubstat"),
       pos: q("#fcevo-pos"), role: q("#fcevo-role"),
-      runbtn: q("#fcevo-runbtn"), clearsel: q("#fcevo-clearsel"), pickhdr: q("#fcevo-pickhdr"),
+      sortbtn: q("#fcevo-sortbtn"),
+      selplayerbanner: q("#fcevo-selplayer-banner"),
+      pssearch: q("#fcevo-pssearch"), psmatches: q("#fcevo-psmatches"),
+      selstripwrap: q("#fcevo-selstrip-wrap"), selstrip: q("#fcevo-selstrip"),
+      reservewrap: q("#fcevo-reserve-wrap"), reservestrip: q("#fcevo-reservestrip"),
+      selcount: q("#fcevo-sel-count"), cursorbadge: q("#fcevo-cursor-badge"), mvafterbtn: q("#fcevo-mvafterbtn"),
+      reservecount: q("#fcevo-reserve-count"), restoreallbtn: q('[data-act="restore-all-reserve"]'),
+      runbtn: q("#fcevo-runbtn"), clearsel: q('[data-act="clearsel"]'),
       evosec: q("#fcevo-evosec"), list: q("#fcevo-list"),
-      queuesec: q("#fcevo-auto"), qlist: q("#fcevo-qlist"), qcount: q("#fcevo-qcount"),
     };
     function q(s) { return root.querySelector(s); }
-    // Keep the panel fully within the viewport (guards against a stale saved
-    // position or a small/mobile screen leaving it partly off-screen).
     function clampPanel() {
       const w = root.offsetWidth, h = root.offsetHeight || 60, m = 8;
       const r = root.getBoundingClientRect();
@@ -1517,41 +1512,51 @@
     els.search.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); els.search.value = ""; searchQ = ""; renderList(); } });
     if (els.trdbtn) els.trdbtn.addEventListener("click", onTrdToggle);
     if (els.psfilterbtn) els.psfilterbtn.addEventListener("click", onPsFilterToggle);
-    // A prior pick leaves the player's name in the box; select it so typing
-    // immediately searches for a different player instead of appending.
     els.search.addEventListener("focus", (e) => { if (state.item) e.target.select(); });
-    els.pos.addEventListener("change", populateRoles);
-    // Re-check glyphs once the EA icon font finishes loading (avoids a flash of
-    // initials on first paint before the font is ready).
+    els.pos.addEventListener("change", onPosChange);
+    els.role.addEventListener("change", onRoleChange);
+
+    if (els.pssearch) {
+      els.pssearch.addEventListener("input", onPsSearchInput);
+      els.pssearch.addEventListener("keydown", onPsSearchKeydown);
+    }
+
+    document.addEventListener("keydown", (e) => {
+      if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.isContentEditable)) return;
+      if (!state.selectedOrder || !state.selectedOrder.length) return;
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        state.cursorIndex = Math.max(0, (state.cursorIndex || 0) - 1);
+        renderSelectedStrip();
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        state.cursorIndex = Math.min(state.selectedOrder.length, (state.cursorIndex || 0) + 1);
+        renderSelectedStrip();
+      }
+    });
+
     try { if (document.fonts && document.fonts.ready) document.fonts.ready.then(markGlyphs); } catch (_) {}
     populatePositions();
-	bindQueueEvents();
     makeDraggable(root, root.querySelector("header"));
     initTips();
-    // Default the club filter to evo-eligible rarities BEFORE the first list render,
-    // so the initial paint is already filtered (not the full club).
     if (ELIGIBLE_RARITIES && ELIGIBLE_RARITIES.length) {
       ELIGIBLE_RARITIES.forEach((id) => state.rarities.add(id));
       els.rarbtn.textContent = "Rarity: " + state.rarities.size + " ▾";
     }
     setTab("PS+");
-    setMode("single");
+    updateGHTab();
 
-    updateGHTab(); // paint the always-visible 4th-PS+ tab in its locked state
-
-    // Restore persisted preferences (localStorage — persists across sessions).
+    // Restore persisted preferences
     if (Number.isFinite(prefs.delay)) els.delay.value = prefs.delay;
     if (typeof prefs.claim === "boolean") els.claim.checked = prefs.claim;
     if (prefs.pos && prefs.pos.left) { root.style.right = "auto"; root.style.left = prefs.pos.left; root.style.top = prefs.pos.top; }
-    clampPanel(); // keep the panel fully on-screen (stale saved pos, small/mobile screens)
+    clampPanel();
     if (prefs.startMin) { root.classList.add("min"); const mb = root.querySelector('[data-act="min"]'); if (mb) mb.title = "Expand"; }
     els.delay.addEventListener("change", () => savePrefs({ delay: +els.delay.value }));
     els.claim.addEventListener("change", () => savePrefs({ claim: els.claim.checked }));
     els.startmin.checked = !!prefs.startMin;
     els.startmin.addEventListener("change", () => savePrefs({ startMin: els.startmin.checked }));
 
-    // Close the rarity dropdown if the panel scrolls or resizes.
-    root.querySelector(".body").addEventListener("scroll", () => closeRar(), { passive: true });
     window.addEventListener("resize", () => { closeRar(); clampPanel(); });
     // Close the rarity dropdown / settings when clicking outside them.
     document.addEventListener("mousedown", (e) => {
@@ -1627,15 +1632,11 @@
   function onClick(e) {
     const act = e.target.getAttribute("data-act");
     const t = e.target.getAttribute("data-tab");
-    const m = e.target.getAttribute("data-mode");
-    if (m) return setMode(m);
     if (t) return setTab(t);
     if (act === "min") {
-      const r = els.root, rect = r.getBoundingClientRect(); // capture edges before the width changes
+      const r = els.root, rect = r.getBoundingClientRect();
       const mn = r.classList.toggle("min");
       if (mn) {
-        // Pin the right edge so collapsing shrinks leftward and the header buttons
-        // stay exactly where they were (no flicker). Remember the expanded anchors.
         r.dataset.exLeft = r.style.left || ""; r.dataset.exRight = r.style.right || "";
         r.style.left = "auto";
         r.style.right = Math.max(4, Math.round(window.innerWidth - rect.right)) + "px";
@@ -1656,20 +1657,76 @@
     if (act === "reloadclub") return startClubLoad(1, true);
     if (act === "rmevo") {
       const b = e.target.closest("button"); if (!b) return;
-      if (state.running) return; // don't arm/confirm mid-run (removeLastEvo would no-op and leave it armed)
+      if (state.running) return;
       if (b.dataset.armed === "1") { b.dataset.armed = ""; return removeLastEvo(); }
       b.dataset.armed = "1"; b.textContent = "Confirm remove?"; b.classList.add("armed");
       setTimeout(() => { if (b && b.dataset.armed === "1") { b.dataset.armed = ""; b.textContent = "Remove last evo"; b.classList.remove("armed"); } }, 3500);
       return;
     }
+    if (act === "rar") return toggleRarPanel();
     if (act === "psfilter") return onPsFilterToggle();
-    if (act === "suggest") return suggest();
-    if (act === "none") { current().forEach((x) => state.selected.delete(x.s)); return (renderGrid(), updateCount()); }
+    if (act === "suggest") return suggest(false);
+    if (act === "togglesort") {
+      state.sortOrder = state.sortOrder === "cat" ? "alpha" : "cat";
+      if (els.sortbtn) {
+        els.sortbtn.textContent = state.sortOrder === "alpha" ? "Sort: A-Z ▾" : "Sort: Category ▾";
+      }
+      renderGrid();
+      return;
+    }
+    if (act === "none") {
+      current().forEach((x) => {
+        state.selected.delete(x.s);
+        state.selectedOrder = state.selectedOrder.filter((s) => s !== x.s);
+      });
+      renderSelectedStrip(); renderGrid(); updateCount(); updateRunBtn();
+      return;
+    }
+    if (act === "mv-after-to-reserve") {
+      const cidx = Math.max(0, Math.min(state.cursorIndex || 0, state.selectedOrder.length));
+      const toMove = state.selectedOrder.slice(cidx);
+      state.selectedOrder = state.selectedOrder.slice(0, cidx);
+      toMove.forEach((s) => {
+        if (!state.reserveOrder.includes(s)) state.reserveOrder.push(s);
+      });
+      renderSelectedStrip();
+      updateCount();
+      return;
+    }
+    if (act === "restore-all-reserve") {
+      const cidx = Math.max(0, Math.min(state.cursorIndex || 0, state.selectedOrder.length));
+      const items = (state.reserveOrder || []).slice();
+      items.forEach((s, idx) => {
+        state.selectedOrder.splice(cidx + idx, 0, s);
+      });
+      state.cursorIndex = cidx + items.length;
+      state.reserveOrder = [];
+      renderSelectedStrip();
+      updateCount();
+      return;
+    }
     if (act === "run") return requestRun({ delayMs: +els.delay.value, claim: els.claim.checked });
     if (act === "stop") return (state.abort = true);
-    if (act === "clearsel") return clearQueue();
-    const qrm = e.target.getAttribute("data-qrm");
-    if (qrm) return removeFromQueue(Number(qrm));
+    if (act === "clearsel") {
+      state.selected.clear();
+      state.selectedOrder = [];
+      state.reserveOrder = [];
+      state.cursorIndex = 0;
+      renderSelectedStrip(); renderGrid(); updateCount(); updateRunBtn();
+      log("Selection cleared.", "dim");
+      return;
+    }
+    const rmps = e.target.getAttribute("data-rmps");
+    if (rmps != null) {
+      const sid = Number(rmps);
+      state.selected.delete(sid);
+      state.selectedOrder = state.selectedOrder.filter((s) => s !== sid);
+      renderSelectedStrip();
+      renderGrid();
+      updateCount();
+      updateRunBtn();
+      return;
+    }
   }
 
   const current = () => (tab === "GH4" ? ghForPlayer(state.item) : tab === "PS+" ? PSP : PS);
@@ -1767,57 +1824,8 @@
     renderList();
   }
 
-  const SUB_LABELS = {
-    acceleration: "Acceleration", sprintspeed: "Sprint Speed", agility: "Agility", balance: "Balance",
-    jumping: "Jumping", stamina: "Stamina", strength: "Strength", reactions: "Reactions",
-    aggression: "Aggression", composure: "Composure", interceptions: "Interceptions", positioning: "Positioning",
-    vision: "Vision", ballcontrol: "Ball Control", crossing: "Crossing", dribbling: "Dribbling",
-    finishing: "Finishing", fkaccuracy: "FK Accuracy", heading: "Heading Acc.", longpassing: "Long Passing",
-    shortpassing: "Short Passing", defaware: "Def. Awareness", shotpower: "Shot Power", longshots: "Long Shots",
-    standtackle: "Stand Tackle", slidetackle: "Slide Tackle", volleys: "Volleys", curve: "Curve", penalties: "Penalties",
-    gkdiving: "GK Diving", gkhandling: "GK Handling", gkkicking: "GK Kicking", gkreflexes: "GK Reflexes", gkpositioning: "GK Pos."
-  };
-  const FACE_OUT = ["PAC", "SHO", "PAS", "DRI", "DEF", "PHY"];
-  const FACE_GK = ["DIV", "HAN", "KIC", "REF", "SPD", "POS"];
-  const FOOT = { 1: "Right", 2: "Left" };
-  const WORK_RATE = { 1: "Low", 2: "Med", 3: "High" };
-  const BODY_TYPE = { 0: "Unique", 1: "Lean", 2: "Average", 3: "Stocky", 4: "High & Lean", 5: "High & Avg", 6: "High & Stocky" };
-  const safe = (fn) => { try { return fn(); } catch (_) { return null; } };
-  function calcAge(dob) {
-    if (!dob) return null;
-    try {
-      const b = new Date(dob);
-      const diff = Date.now() - b.getTime();
-      const ageDate = new Date(diff);
-      return Math.abs(ageDate.getUTCFullYear() - 1970);
-    } catch (_) { return null; }
-  }
-  function formatDOB(dob) {
-    if (!dob) return "—";
-    try {
-      const d = typeof dob === "number" && dob < 1e10 ? new Date(dob * 1000) : new Date(dob);
-      if (isNaN(d)) return "—";
-      return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
-    } catch (_) { return "—"; }
-  }
-  const POS_LABEL = {
-     0:"GK", 1:"CB", 2:"RB", 3:"LB", 4:"SW", 5:"CB", 6:"CB",
-     7:"RWB",8:"LWB",9:"CDM",10:"CDM",11:"CDM",12:"RM",13:"CM",
-    14:"CM",15:"CM",16:"LM",17:"CAM",18:"CAM",19:"CAM",20:"RW",
-    21:"ST",22:"LW",23:"RW",24:"CF",25:"ST",26:"ST",27:"LW",
-  };
-  function getPlayerPositions(it) {
-    if (!it) return { mainPos: "—", alts: [], all: [] };
-    const mainId = it.preferredPosition;
-    const mainPos = POS_LABEL[mainId] || "—";
-    let altIds = null;
-    try { if (Array.isArray(it.possiblePositions)) altIds = it.possiblePositions; } catch (_) {}
-    if (!altIds) { try { altIds = it.getBasePossiblePositions(); } catch (_) {} }
-    altIds = altIds || [];
-    const alts = altIds.filter((id) => id !== mainId).map((id) => POS_LABEL[id] || String(id));
-    const all = [...new Set([mainPos, ...alts])];
-    return { mainPos, alts, all };
-  }
+
+
   function getNationName(id) {
     if (id == null) return null;
     try {
@@ -1874,6 +1882,59 @@
     return false;
   }
 
+  const POS_LABEL = {
+     0:"GK", 1:"CB", 2:"RB", 3:"LB", 4:"SW", 5:"CB", 6:"CB",
+     7:"RWB",8:"LWB",9:"CDM",10:"CDM",11:"CDM",12:"RM",13:"CM",
+    14:"CM",15:"CM",16:"LM",17:"CAM",18:"CAM",19:"CAM",20:"RW",
+    21:"ST",22:"LW",23:"RW",24:"CF",25:"ST",26:"ST",27:"LW",
+  };
+  function getPlayerPositions(it) {
+    if (!it) return { mainPos: "—", alts: [], all: [] };
+    const mainId = it.preferredPosition;
+    const mainPos = POS_LABEL[mainId] || "—";
+    let altIds = null;
+    try { if (Array.isArray(it.possiblePositions)) altIds = it.possiblePositions; } catch (_) {}
+    if (!altIds) { try { altIds = it.getBasePossiblePositions(); } catch (_) {} }
+    altIds = altIds || [];
+    const alts = altIds.filter((id) => id !== mainId).map((id) => POS_LABEL[id] || String(id));
+    const all = [...new Set([mainPos, ...alts])];
+    return { mainPos, alts, all };
+  }
+  const SUB_LABELS = {
+    "acceleration":"Acceleration", "sprintspeed":"Sprint Speed", "finishing":"Finishing", "shotpower":"Shot Power", "longshots":"Long Shots", "volleys":"Volleys",
+    "penalties":"Penalties", "fkaccuracy":"FK Accuracy", "heading":"Heading Accuracy", "curve":"Curve", "shortpassing":"Short Passing", "longpassing":"Long Passing",
+    "crossing":"Crossing", "vision":"Vision", "dribbling":"Dribbling", "ballcontrol":"Ball Control", "agility":"Agility", "balance":"Balance",
+    "reactions":"Reactions", "composure":"Composure", "interceptions":"Interceptions", "defaware":"Def. Awareness", "standtackle":"Standing Tackle",
+    "slidetackle":"Sliding Tackle", "jumping":"Jumping", "stamina":"Stamina", "strength":"Strength", "aggression":"Aggression", "positioning":"Att. Positioning",
+    "gkdiving":"GK Diving", "gkhandling":"GK Handling", "gkkicking":"GK Kicking", "gkreflexes":"GK Reflexes", "gkpositioning":"GK Positioning"
+  };
+  const FACE_OUT = ["PAC", "SHO", "PAS", "DRI", "DEF", "PHY"];
+  const FACE_GK  = ["DIV", "HAN", "KIC", "REF", "SPD", "POS"];
+  const WORK_RATE = { 0: "Low", 1: "Medium", 2: "High" };
+  const FOOT = { 1: "Right", 2: "Left" };
+  const BODY_TYPE = { 0: "Lean", 1: "Normal", 2: "Stocky", 3: "Lean (Tall)", 4: "Normal (Tall)", 5: "Stocky (Tall)", 6: "Unique" };
+
+  function calcAge(bd) {
+    try {
+      const d = typeof bd === "number" && bd < 1e10 ? new Date(bd * 1000) : new Date(bd);
+      if (isNaN(d.getTime())) return null;
+      const now = new Date();
+      let age = now.getFullYear() - d.getFullYear();
+      const m = now.getMonth() - d.getMonth();
+      if (m < 0 || (m === 0 && now.getDate() < d.getDate())) age--;
+      return age > 10 && age < 60 ? age : null;
+    } catch (_) { return null; }
+  }
+
+  function formatDOB(bd) {
+    try {
+      if (!bd) return "—";
+      const d = typeof bd === "number" && bd < 1e10 ? new Date(bd * 1000) : new Date(bd);
+      if (isNaN(d.getTime())) return String(bd);
+      return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    } catch (_) { return "—"; }
+  }
+
   const CHEM_STYLES = {
     250: "Basic", 251: "Sniper", 252: "Finisher", 253: "Deadeye", 254: "Marksman", 255: "Hawk",
     256: "Artist", 257: "Architect", 258: "Powerhouse", 259: "Maestro", 260: "Engine",
@@ -1926,6 +1987,33 @@
     return full || name || playerName(it);
   }
 
+  function updateSelPlayerBanner() {
+    const banner = els.selplayerbanner || document.getElementById("fcevo-selplayer-banner");
+    if (!banner) return;
+    if (!state.item) {
+      banner.style.display = "none";
+      banner.innerHTML = "";
+      return;
+    }
+    const it = state.item;
+    const posInfo = getPlayerPositions(it);
+    const prefPos = posInfo.mainPos || "—";
+    const isUntr = isUntradeableCard(it);
+    banner.style.display = "flex";
+    banner.innerHTML = `
+      <div style="display:flex;align-items:center;gap:6px;width:100%">
+        <span style="font-size:13px">👤</span>
+        <span style="color:var(--ash);font-size:11px">Working on:</span>
+        <b style="color:var(--acc);font-size:12px">${esc(playerName(it))}</b>
+        <span class="pos-chip" style="margin:0">${it.rating ?? "?"} ${esc(prefPos)}</span>
+        <span class="trd-badge ${isUntr ? "untr" : "trd"}" style="margin:0">${isUntr ? "UNT" : "TRD"}</span>
+        <button class="view-btn" data-act="view-attrs-banner" style="margin-left:auto" title="View all attributes & details">View stats ↗</button>
+      </div>
+    `;
+    const vb = banner.querySelector('[data-act="view-attrs-banner"]');
+    if (vb) vb.addEventListener("click", () => openAttrModal(it));
+  }
+
   function openAttrModal(it) {
     if (!it) return;
     let modal = document.getElementById("fcevo-attr-modal");
@@ -1935,6 +2023,7 @@
       document.body.appendChild(modal);
     }
     modal.className = "fcevo-modal-overlay open";
+    modal.style.display = "flex";
 
     try {
       const sd = (it.getStaticData ? it.getStaticData() : it._staticData) || {};
@@ -2097,14 +2186,28 @@
         </div>
       `;
 
+      const closeModal = () => {
+        modal.classList.remove("open");
+        modal.style.display = "none";
+        document.removeEventListener("keydown", onEsc);
+      };
+      const onEsc = (e) => {
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          closeModal();
+        }
+      };
+      document.addEventListener("keydown", onEsc);
+
       const closeBtn = modal.querySelector("#fcevo-attr-close");
-      if (closeBtn) closeBtn.onclick = () => modal.classList.remove("open");
+      if (closeBtn) closeBtn.onclick = closeModal;
       modal.onclick = (e) => {
-        if (e.target === modal) modal.classList.remove("open");
+        if (e.target === modal) closeModal();
       };
     } catch (err) {
       console.error("[FCEvo] openAttrModal failed:", err);
       modal.classList.remove("open");
+      modal.style.display = "none";
     }
   }
 
@@ -2127,12 +2230,10 @@
   const LIST_CAP = 500;
   let listCapOverride = null;
   function playerRow(it) {
-    const auto = state.mode === "auto";
     const row = document.createElement("div");
     const hasEvos = (numPlus(it) ?? 0) > 0 || (numBasic(it) ?? 0) > 0;
-    const active = auto ? state.queue.some((q) => q.item.id === it.id) : (state.item && state.item.id === it.id);
+    const active = state.item && state.item.id === it.id;
     row.className = "pr" + (hasEvos ? " hasps" : "") + (active ? " on" : "");
-    const gk = isGKItem(it);
     const isUntr = isUntradeableCard(it);
     const posInfo = getPlayerPositions(it);
     const prefPos = posInfo.mainPos || "—";
@@ -2151,16 +2252,14 @@
         openAttrModal(it);
         return;
       }
-      auto ? toggleQueue(it) : selectPlayer(it);
+      selectPlayer(it);
     });
     return row;
   }
-  // The one club list, shared by Single (click to pick) and Auto (tick to select).
+
   function renderList() {
     const box = els.list; if (!box) return; box.innerHTML = "";
     const all = clubPlayers().filter((it) => !!it);
-    // While the club is still loading the status line above already says so —
-    // don't repeat it here. Only speak up once loaded but nothing is evolvable.
     if (!all.length) { box.innerHTML = clubPlayers().length ? `<div class="rhint">No evolvable players &mdash; all owned or ineligible.</div>` : ``; updateRunBtn(); return; }
     const matches = (searchQ || state.trdFilter !== "all" || state.psFilter !== "all" ? all.filter((it) => {
       const isUntr = isUntradeableCard(it);
@@ -2216,9 +2315,6 @@
     updateRunBtn();
   }
 
-  // Read the live UTItemEntity behind the open player-detail panel by walking
-  // getAppMain().getRootViewController(). Used to grab the freshest copy of a
-  // just-evolved card (see freshItemById). Returns null if unreachable / none open.
   function openEntity() {
     if (typeof window.getAppMain !== "function") return null;
     let root; try { root = window.getAppMain().getRootViewController(); } catch (_) { return null; }
@@ -2243,30 +2339,51 @@
         if (isItem(v)) { hits.push(v); break; }
       }
     }
-    // Breadth-first visits shallow controllers first; the frontmost panel is the
-    // deepest presented, so the last hit is the card on top.
     return hits.length ? hits[hits.length - 1] : null;
   }
 
   function selectPlayer(it) {
+    if (!it) {
+      state.item = null;
+      renderPreview();
+      renderList();
+      updateSelPlayerBanner();
+      populatePositions();
+      return;
+    }
     state.item = it;
     state.selected.clear();
-    // Reflect the pick in the search box and highlight the row in the shared list.
+    state.selectedOrder = [];
+    state.suggestedSlots.clear();
     searchQ = "";
     if (els.search) els.search.value = playerName(it);
     renderList();
-    populatePositions(); // now restricted to this player's positions, preferred first
-    renderPreview(); renderGrid(); updateCount();
-    if (els.preview && els.preview.scrollIntoView) els.preview.scrollIntoView({ block: "nearest" });
-    log("🎯 Selected " + playerName(it) + " (" + it.rating + ")", "head");
-  updateGHTab();
+    renderPreview();
+    updateSelPlayerBanner();
+    populatePositions(); // populates positions restricted to this player
+
+    // Auto-resolve primary position & default role
+    const rr = autoResolveRole(it);
+    if (rr) {
+      if (els.pos && rr.pos) els.pos.value = rr.pos;
+      populateRoles();
+      if (els.role && rr.role) els.role.value = rr.role;
+    }
+
+    // Auto-suggest and pre-select playstyles right away!
+    suggest(true);
+
+    renderPreview();
+    renderGrid();
+    renderSelectedStrip();
+    updateCount();
+    updateRunBtn();
+    log("🎯 Selected " + playerName(it) + " (" + (it.rating ?? "?") + " " + (rr ? rr.pos : "") + ") — PlayStyles auto-suggested.", "head");
+    updateGHTab();
   }
 
-  // Show the "4th PS+" tab only for Glory Hunters cards; auto-load the reward evos
-  // the first time one is picked, then refresh the grid if that tab is open.
   function ghTabBtn() { return els.root && els.root.querySelector('.tabs button[data-tab="GH4"]'); }
   const ghKinds = () => new Set(GH.map((g) => g.n)).size;
-  // Why the 4th-PS+ tab is locked for the current pick ("" = it's available).
   function ghDisabledReason() {
     const it = state.item;
     if (!it) return "Select a player first";
@@ -2275,8 +2392,6 @@
     if (np >= 4) return "Already has 4 PS+";
     return "";
   }
-  // Keep the 4th-PS+ tab ALWAYS visible (so people discover it) but greyed out with
-  // a hover tip unless the selected card is eligible for a 4th PS+.
   function updateGHTab() {
     const btn = ghTabBtn(); if (!btn) return;
     const reason = ghDisabledReason();
@@ -2306,19 +2421,33 @@
     if (state.item) {
       const groups = playerPositionGroups(state.item);
       const list = groups.length ? groups : Object.keys(ROLES);
-      els.pos.innerHTML = list.map((p) => `<option>${esc(p)}</option>`).join("");
+      els.pos.innerHTML = list.map((p) => `<option value="${esc(p)}">${esc(p)}</option>`).join("");
     } else {
-      els.pos.innerHTML = '<option value="">position…</option>' + Object.keys(ROLES).map((p) => `<option>${esc(p)}</option>`).join("");
+      els.pos.innerHTML = '<option value="">position…</option>' + Object.keys(ROLES).map((p) => `<option value="${esc(p)}">${esc(p)}</option>`).join("");
     }
     populateRoles();
   }
   function populateRoles() {
-    const pos = els.pos.value;
+    const pos = els.pos ? els.pos.value : "";
     const rs = pos && ROLES[pos] ? Object.keys(ROLES[pos]) : [];
-    els.role.innerHTML = '<option value="">role…</option>' + rs.map((r) => `<option>${esc(r)}</option>`).join("");
+    if (els.role) {
+      els.role.innerHTML = rs.length
+        ? rs.map((r) => `<option value="${esc(r)}">${esc(r)}</option>`).join("")
+        : '<option value="">role…</option>';
+    }
   }
-  // Pure: which evo slotIds to select for a player at a position+role, respecting
-  // caps, ownership and GK scope. Returns { slots:[slotIds], owned, skip:[names] }.
+  function onPosChange() {
+    populateRoles();
+    if (state.item && els.pos.value && els.role.value) {
+      suggest(true);
+    }
+  }
+  function onRoleChange() {
+    if (state.item && els.pos.value && els.role.value) {
+      suggest(true);
+    }
+  }
+
   function suggestedSlots(it, pos, role) {
     const names = (ROLES[pos] && ROLES[pos][role]) || [];
     const gk = isGKItem(it);
@@ -2327,14 +2456,11 @@
     let plusUsed = numPlus(it) ?? 0, baseUsed = numBasic(it) ?? 0, owned = 0;
     const slots = [], skip = [];
     names.forEach((name, idx) => {
-      const wantPlus = idx < maxPlus && plusUsed < maxPlus; // top 4 for 4-PS+ cards (FUTTIES/GH), top 3 for 3-PS+ cards!
+      const wantPlus = idx < maxPlus && plusUsed < maxPlus;
       const evo = wantPlus ? pspByName[name] : psByName[name];
       if (!evo) { skip.push(name); return; }
       if (evo.g && !gk) { skip.push(name + " (GK-only)"); return; }
       if (hasEvo(it, evo)) { owned++; return; }
-      // Mutual exclusivity: a base PlayStyle the player already has as PS+ (e.g. a
-      // 4th-PS+ from a prior evo) can't be applied — the + already covers it. The grid
-      // blocks this; Suggest must too, or it preselects an impossible pick.
       if (evo.kind === "PS") { let po = false; try { po = !!it.hasPlusPlayStyle(evoTrait(evo)); } catch (_) {} if (po) { owned++; return; } }
       if (wantPlus) { if (plusUsed >= maxPlus) { skip.push(name + "+ (no room)"); return; } plusUsed++; }
       else { if (baseUsed >= maxBasic) { skip.push(name + " (no room)"); return; } baseUsed++; }
@@ -2343,38 +2469,33 @@
     return { slots, owned, skip };
   }
 
-  //added new
-  function refreshQueueSuggestions(q) {
-
-    if (!q) return;
-
-    const result = suggestedSlots(
-        q.item,
-        q.role.pos,
-        q.role.role
-    );
-
-    q.slots = result.slots;
-
-}
-  function suggest() {
+  function suggest(isAuto = false) {
     if (!state.item) return log("✋ Select a player first.", "warn");
-    const pos = els.pos.value, role = els.role.value;
-    if (!pos || !role || !ROLES[pos] || !ROLES[pos][role]) return log("✋ Pick a position and role.", "warn");
+    const pos = els.pos ? els.pos.value : "";
+    const role = els.role ? els.role.value : "";
+    if (!pos || !role || !ROLES[pos] || !ROLES[pos][role]) {
+      if (!isAuto) log("✋ Pick a position and role.", "warn");
+      return;
+    }
     const { slots, owned, skip } = suggestedSlots(state.item, pos, role);
+    state.suggestedSlots = new Set(slots);
     state.selected.clear();
-    slots.forEach((s) => state.selected.add(s));
+    state.selectedOrder = [];
+    slots.forEach((s) => {
+      state.selected.add(s);
+      state.selectedOrder.push(s);
+    });
     setTab(idxTab());
-    renderGrid(); updateCount();
-    log(`✨ Preselected ${slots.length}${owned ? `, ${owned} owned` : ""}${skip.length ? `, ${skip.length} skipped` : ""} — tweak, then Apply.`, "head");
-    if (skip.length) log("   skipped: " + skip.join(", "), "dim");
+    renderGrid();
+    renderSelectedStrip();
+    updateCount();
+    updateRunBtn();
+    const msg = `✨ Preselected ${slots.length} evo${slots.length === 1 ? "" : "s"} for ${pos} · ${role}${owned ? ` (${owned} owned)` : ""}.`;
+    log(msg, "head");
+    if (skip.length && !isAuto) log("   skipped: " + skip.join(", "), "dim");
   }
 
-  // --- Auto (bulk) mode: resolver + checklist + direct apply ------------------
-  // attributes = [pace, shooting, passing, dribbling, defending, physical]
   const ATT = (it, i) => { try { const a = (it.getAttributes && it.getAttributes()) || it.attributes; return a && a[i] != null ? +a[i] : null; } catch (_) { return null; } };
-  // The six face stats as a compact strip, to eyeball before picking PlayStyles.
-  // GKs report a different set (DIV/HAN/KIC/REF/SPD/POS) in the same 6 slots.
   const FACE_LABELS = ["PAC", "SHO", "PAS", "DRI", "DEF", "PHY"];
   const GK_LABELS = ["DIV", "HAN", "KIC", "REF", "SPD", "POS"];
   function statRow(it) {
@@ -2390,14 +2511,15 @@
     "ST": "Advanced Forward", "RW / LW": "Inside Forward", "RM / LM": "Inside Forward",
     "CAM": "Shadow Striker", "CM": "Box to Box", "CDM": "Deep Lying Playmaker",
     "RB / LB": "Fullback", "CB": "Defender", "GK": "Goalkeeper",
+    "RW": "Inside Forward", "LW": "Inside Forward", "RM": "Inside Forward", "LM": "Inside Forward",
+    "RB": "Fullback", "LB": "Fullback", "RWB": "Wingback", "LWB": "Wingback"
   };
-  const CM_DLP_RATIO = 0.94; // shooting/defending at or below this -> Deep Lying Playmaker
-  // Pick { pos, role } from a card's primary position, with a CM attribute tweak.
+  const CM_DLP_RATIO = 0.94;
   function autoResolveRole(it) {
     let pos = POS_GROUP[it && it.preferredPosition];
-    if (!pos) { const g = playerPositionGroups(it); pos = g[0]; }
-    if (!pos) return null;
-    let role = DEFAULT_ROLE[pos];
+    if (!pos) { const g = playerPositionGroups(it); pos = g && g[0]; }
+    if (!pos) pos = "ST";
+    let role = DEFAULT_ROLE[pos] || (ROLES[pos] ? Object.keys(ROLES[pos])[0] : "Advanced Forward");
     if (pos === "CM") {
       const sho = ATT(it, 1), def = ATT(it, 4);
       if (sho != null && def != null && def > 0) {
@@ -2408,340 +2530,37 @@
     if (!ROLES[pos] || !ROLES[pos][role]) role = ROLES[pos] ? Object.keys(ROLES[pos])[0] : role;
     return { pos, role };
   }
-  function setMode(m) {
-    const next = m === "auto" ? "auto" : "single";
-    if (next !== state.mode) {
-      // Switching modes starts clean — drop the other mode's transient selection.
-      if (next === "auto") { state.selected.clear(); }   // leaving Single: clear evo picks
-      else { state.queue = []; }                          // leaving Auto: clear the queue
-      state.abort = false;
-    }
-    state.mode = next;
-    const auto = state.mode === "auto";
-    els.root.querySelectorAll(".modetabs button").forEach((b) => b.classList.toggle("on", b.getAttribute("data-mode") === state.mode));
-    els.evosec.style.display = auto ? "none" : "";
-    els.queuesec.style.display = "none"; // renderQueue re-shows it in Auto when non-empty
-    els.preview.style.display = auto ? "none" : (state.item ? "" : "none");
-    if (els.clearsel) els.clearsel.style.display = auto ? "" : "none"; // clears the queue (auto only)
-    if (els.pickhdr) els.pickhdr.textContent = auto ? "Click players to queue" : "Select from club";
-    renderList(); // one shared list; click = select (single) or queue (auto)
-    if (auto) renderQueue(); else { renderPreview(); renderGrid(); updateCount(); }
-    updateRunBtn();
-  }
+
   function updateRunBtn() {
     if (!els.runbtn) return;
-    // any label refresh also disarms the two-step confirm
     clearTimeout(_armTimer); els.runbtn.dataset.armed = ""; els.runbtn.classList.remove("armed");
-    if (state.mode === "auto") {
-      const n = state.queue.length;
-      els.runbtn.textContent = n ? `Evolve selected players (${n})` : "Evolve selected players";
-    } else {
-      els.runbtn.textContent = "Apply selected evolutions";
-    }
+    const n = state.selected.size;
+    els.runbtn.textContent = n ? `Apply ${n} Selected Evolution${n > 1 ? "s" : ""}` : "Apply Selected Evolutions";
+    if (els.clearsel) els.clearsel.style.display = n > 0 ? "" : "none";
   }
   function disarmRun() { clearTimeout(_armTimer); if (els.runbtn) { els.runbtn.dataset.armed = ""; els.runbtn.classList.remove("armed"); } updateRunBtn(); }
-  // Run button entry point. Single applies immediately; Auto uses an in-panel
-  // two-step confirm (first click arms the button, second click within 4s evolves).
   function requestRun(opts) {
     if (state.running) return;
-    if (state.mode !== "auto") return runDispatch(opts);
-    if (!state.queue.length) return log("✋ Queue is empty — click players to add them.", "warn");
-    if (els.runbtn.dataset.armed === "1") { clearTimeout(_armTimer); els.runbtn.dataset.armed = ""; els.runbtn.classList.remove("armed"); return runDispatch(opts); }
-    els.runbtn.dataset.armed = "1"; els.runbtn.classList.add("armed");
-    const total = state.queue.reduce((s, q) => s + q.slots.length, 0);
-    els.runbtn.textContent = `Confirm — evolve ${state.queue.length} (${total} evo${total > 1 ? "s" : ""})?`;
-    _armTimer = setTimeout(disarmRun, 4000);
+    if (!state.item) return log("✋ No player selected — select a player from the list.", "warn");
+    if (!state.selected.size) return log("✋ No evolutions selected — select playstyles to apply.", "warn");
+
+    // Confirmation if the card is tradeable
+    const isUntr = isUntradeableCard(state.item);
+    if (!isUntr) {
+      const pName = playerName(state.item);
+      const msg = `⚠️ TRADEABLE CARD WARNING!\n\n` +
+        `"${pName}" is currently a TRADEABLE card.\n\n` +
+        `Applying PlayStyle evolutions will permanently convert this card into an UNTRADEABLE card that cannot be sold on the Transfer Market.\n\n` +
+        `Are you sure you want to apply ${state.selected.size} evolution(s) to this tradeable card?`;
+      if (!window.confirm(msg)) {
+        log(`✋ Evolution cancelled: "${pName}" is tradeable.`, "warn");
+        return;
+      }
+    }
+
+    return runDispatch(opts);
   }
 
-  // --- Auto queue: click a player to add (auto-resolved), review, remove, evolve ---
-  function toggleQueue(it) {
-    const i = state.queue.findIndex((q) => q.item.id === it.id);
-    if (i >= 0) { state.queue.splice(i, 1); renderList(); renderQueue(); updateRunBtn(); return; } // click again = remove
-    const rr = autoResolveRole(it);
-    const { slots } = rr ? suggestedSlots(it, rr.pos, rr.role) : { slots: [] };
-    if (!slots.length) return log(`⊘ ${playerName(it)}: nothing to add (owned/capped).`, "warn");
-    // Commented by state.queue.push({ item: it, role: rr, slots });
-	const positions = playerPositionGroups(it);
-
-	state.queue.push({
-		item: it,
-		positions,
-		role: {
-			pos: rr.pos,
-			role: rr.role
-		},
-		slots
-	});
-    renderList(); renderQueue(); updateRunBtn();
-    log(`➕ Queued ${playerName(it)} (${slots.length} evo${slots.length > 1 ? "s" : ""}).`, "head");
-  }
-	// Added by 
-	function queueRoles(pos) {
-	return ROLES[pos] ? Object.keys(ROLES[pos]) : [];
-	}
-  function removeFromQueue(id) { const i = state.queue.findIndex((q) => q.item.id === id); if (i >= 0) state.queue.splice(i, 1); renderList(); renderQueue(); updateRunBtn(); }
-  function clearQueue() { if (!state.queue.length) return; state.queue = []; renderList(); renderQueue(); updateRunBtn(); log("Queue cleared.", "dim"); }
-
-
-
-
-  function renderQueueItem(q, idx) {
-
-    const it = q.item;
-
-    // Ensure numeric values remain numeric before HTML interpolation.
-    const itemId = Number.isFinite(Number(it.id)) ? Number(it.id) : 0;
-    const rating = Number.isFinite(Number(it.rating)) ? Number(it.rating) : "?";
-
-    const gk = isGKItem(it);
-
-    const chips = renderQueueChips(q.slots);
-
-    return `
-        <div class="qi" data-index="${idx}">
-
-            <div class="qi-head">
-
-                <span class="ov">${rating}</span>
-
-                <span class="nm">
-                    ${esc(playerName(it))}
-                    ${gk ? '<span class="gk">GK</span>' : ""}
-                </span>
-
-                <div class="qedit">
-
-                    <div class="qedit-row">
-
-                        <label for="qpos-${idx}">Position</label>
-
-                        <select id="qpos-${idx}"
-                            class="qpos"
-                            data-index="${idx}">
-
-                            ${q.positions.map(p => `
-                                <option
-                                    value="${esc(p)}"
-                                    ${p === q.role.pos ? "selected" : ""}>
-                                    ${esc(p)}
-                                </option>
-                            `).join("")}
-
-                        </select>
-
-                    </div>
-
-                    <div class="qedit-row">
-
-                        <label for="qrole-${idx}">Role</label>
-
-                        <select id="qrole-${idx}"
-                            class="qrole"
-                            data-index="${idx}">
-
-                            ${queueRoles(q.role.pos).map(r => `
-                                <option
-                                    value="${esc(r)}"
-                                    ${r === q.role.role ? "selected" : ""}>
-                                    ${esc(r)}
-                                </option>
-                            `).join("")}
-
-                        </select>
-
-                    </div>
-
-                </div>
-
-                <button
-                    class="qx"
-                    data-qrm="${itemId}"
-                    title="Remove from queue">
-
-                    ✕
-
-                </button>
-
-            </div>
-
-            <div class="qps">
-                ${chips}
-            </div>
-
-            ${statRow(it)}
-
-        </div>
-    `;
-
-}
-function updateQueueItem(index) {
-
-    if (!els.qlist) return;
-
-    const q = state.queue[index];
-    if (!q) return;
-
-    const row = els.qlist.querySelector(
-        `.qi[data-index="${index}"]`
-    );
-
-    if (!row) return;
-
-    const scrollTop = els.qlist.scrollTop;
-
-    row.outerHTML = renderQueueItem(q, index);
-
-    els.qlist.scrollTop = scrollTop;
-
-    markGlyphs();
-
-
-}
-  function renderQueue() {
-    if (!els.queuesec) return;
-    if (!state.queue.length) { els.queuesec.style.display = "none"; return; }
-    els.queuesec.style.display = "";
-    els.qcount.textContent = state.queue.length + " player" + (state.queue.length > 1 ? "s" : "");
-    /*els.qlist.innerHTML = state.queue.map((q, idx) => {
-      const it = q.item, gk = isGKItem(it);
-      //Commented by const roleTxt = q.role ? `${q.role.pos} · ${q.role.role}` : "";
-      const chips = renderQueueChips(q.slots);
-      return `<div class="qi"><div class="qi-head"><span class="ov">${it.rating ?? "?"}</span>`
-        + `<span class="nm">${esc(playerName(it))}${gk ? ' <span class="gk">GK</span>' : ""}</span>`
-        // Commented by + (roleTxt ? `<span class="rolechip">${esc(roleTxt)}</span>` : "")
-		+ `<div class="qedit">
-
-			<div class="qedit-row">
-
-				<label>Position</label>
-
-				<select
-					class="qpos"
-					data-index="${idx}">
-
-					${q.positions.map(p =>
-						`<option value="${esc(p)}"
-							${p===q.role.pos?"selected":""}>
-							${esc(p)}
-						</option>`).join("")}
-
-				</select>
-
-			</div>
-
-			<div class="qedit-row">
-
-				<label>Role</label>
-
-				<select
-					class="qrole"
-					data-index="${idx}">
-
-					${queueRoles(q.role.pos).map(r =>
-						`<option value="${esc(r)}"
-							${r===q.role.role?"selected":""}>
-							${esc(r)}
-						</option>`).join("")}
-
-				</select>
-
-			</div>
-
-		</div>`
-        + `<button class="qx" data-qrm="${it.id}" title="Remove from queue">✕</button></div>`
-        + `<div class="qps">${chips}</div></div>`;
-    }).join("");*/
-	els.qlist.innerHTML = state.queue
-    .map(renderQueueItem)
-    .join("");
-    markGlyphs();
-  }
-
-
-  function renderQueueChips(slots) {
-
-    return slots.map((sid) => {
-
-        const evo = byId(sid);
-        if (!evo) return "";
-
-        const nm = dispName(baseName(evo));
-
-        return `
-            <span
-                class="chip ${evo.kind === "PS+" ? "ic" : ""}"
-                data-ini="${esc(initials(nm))}"
-                data-tip="${esc(nm)}${evo.kind === "PS+" ? " +" : ""}|${esc(psDesc(baseName(evo)))}">
-
-                <i class="${iconClass(
-                    evo.kind === "PS+",
-                    evoTrait(evo)
-                )}"></i>
-
-            </span>
-        `;
-
-    }).join("");
-
-}
-
-function bindQueueEvents() {
-
-    if (!els.qlist) return;
-
-    els.qlist.addEventListener("change", (e) => {
-
-        const target = e.target;
-
-        if (!(target instanceof HTMLSelectElement)) return;
-
-        const idx = Number(target.dataset.index);
-
-        const q = state.queue[idx];
-
-        if (!q) return;
-
-        if (target.classList.contains("qpos")) {
-
-            q.role.pos = target.value;
-
-            const roles = queueRoles(q.role.pos);
-
-            q.role.role = roles.length ? roles[0] : "";
-
-            refreshQueueSuggestions(q);
-
-            if (!q.slots.length) {
-                removeFromQueue(q.item.id);          // existing queue removal path
-                return;
-            }
-
-            updateQueueItem(idx);
-            updateRunBtn();
-            return;
-        }
-
-        if (target.classList.contains("qrole")) {
-
-            q.role.role = target.value;
-
-            refreshQueueSuggestions(q);
-
-            if (!q.slots.length) {
-                removeFromQueue(q.item.id);          // existing queue removal path
-                return;
-            }
-
-            updateQueueItem(idx);
-            updateRunBtn();
-
-        }
-
-    });
-
-}
-
-  // Dump a player entity so the obfuscated attribute field names can be mapped.
   function dumpEntity() {
     const it = state.item;
     if (!it) { log("✋ Select a player first.", "warn"); return null; }
@@ -2753,95 +2572,532 @@ function bindQueueEvents() {
       attributeList: it.attributeList, attributeArray: it.attributeArray,
       coverage: readAttrs(it)._coverage,
     };
-    console.log("[FCEvo] entity dump — share this to finalize attribute mapping:", dump);
-    log("🔬 Entity dumped to console (attribute coverage " + Math.round(dump.coverage * 100) + "%).", "head");
+    console.log("[FCEvo] entity dump:", dump);
+    log("🔬 Entity dumped to console.", "head");
     return dump;
   }
-  function idxTab() { // show the tab that has the most selected, default PS+
+  function idxTab() {
     const selPlus = [...state.selected].filter((s) => byId(s) && byId(s).kind === "PS+").length;
     return selPlus >= state.selected.size - selPlus ? "PS+" : "PS";
   }
 
   function renderPreview() {
     const box = els.preview;
+    if (!box) return;
     if (!state.item) { box.style.display = "none"; return; }
     const it = state.item;
     const gk = (() => { try { return it.isGK(); } catch (_) { return false; } })();
     const nb = numBasic(it), np = numPlus(it), cp = capPlus(it), cb = capBasic(it);
     const basicFull = nb != null && nb >= cb, plusFull = np != null && np >= cp;
+    const posInfo = getPlayerPositions(it);
+    const prefPos = posInfo.mainPos || "—";
+    const isUntr = isUntradeableCard(it);
     box.style.display = "";
     box.innerHTML = `
-      <div class="card">
+      <div class="card" style="border:1px solid rgba(51,214,193,0.5);background:rgba(51,214,193,0.06);box-shadow:0 4px 14px rgba(51,214,193,0.12)">
         <div class="ov">${it.rating ?? "?"}</div>
         <div class="meta">
           <div class="pn">${esc(playerName(it))} ${gk ? '<span class="gk" style="font-size:10px;color:var(--acc)">GK</span>' : ""}</div>
-          <div class="muted">${esc(rarityName(it))}</div>
+          <div class="muted" style="display:flex;align-items:center;gap:4px;margin-top:2px">
+            <span class="pos-chip" style="margin:0">${esc(prefPos)}</span>
+            <span>${esc(rarityName(it))}</span>
+            <span class="trd-badge ${isUntr ? "untr" : "trd"}" style="margin:0">${isUntr ? "UNT" : "TRD"}</span>
+            <button class="view-btn" data-act="view-attrs-preview" style="margin-left:auto" title="View all attributes & details">View stats ↗</button>
+          </div>
         </div>
       </div>
       ${statRow(it)}
       <div class="caps">
-        <div class="cap ${plusFull ? "full" : ""}"><b>${np ?? "?"}/${cp}</b><small>PS+ used</small></div>
-        <div class="cap ${basicFull ? "full" : ""}"><b>${nb ?? "?"}/${cb}</b><small>Basic used</small></div>
+        <div class="cap ${plusFull ? "full" : ""}"><b>${np ?? "?"}/${cp}</b><small>PS+ capacity</small></div>
+        <div class="cap ${basicFull ? "full" : ""}"><b>${nb ?? "?"}/${cb}</b><small>Basic capacity</small></div>
       </div>
       <div class="psrow">${currentPlayStyles(it).map((p) => {
         const nm = traitName[p.traitId] || ("trait " + p.traitId);
         return `<div class="chip ${p.isIcon ? "ic" : ""}" data-ini="${esc(initials(nm))}" data-tip="${esc(dispName(nm))}${p.isIcon ? " +" : ""}|${esc(psDesc(nm))}"><i class="${iconClass(p.isIcon, p.traitId)}"></i></div>`;
       }).join("") || '<span class="muted">no playstyles</span>'}</div>` +
       (canRemoveEvo(it) && evoRemovalEnabled()
-        ? `<div class="row" style="margin-top:9px;justify-content:flex-end"><button class="mini rmevo" data-act="rmevo" data-tip="Remove last evo|Removes the most recently applied PlayStyle upgrade from this player (EA's own evo-removal). Repeatable — click again to remove the next. Click once to arm, again to confirm.">Remove last evo</button></div>`
+        ? `<div class="row" style="margin-top:9px;justify-content:flex-end"><button class="mini rmevo" data-act="rmevo" data-tip="Remove last evo|Removes the most recently applied PlayStyle upgrade from this player. Click once to arm, again to confirm.">Remove last evo</button></div>`
         : "");
+    
+    const vb = box.querySelector('[data-act="view-attrs-preview"]');
+    if (vb) vb.addEventListener("click", () => openAttrModal(it));
     markGlyphs();
   }
 
   // ---- evo grid ----
   function evoCard(evo, it, gkPlayer) {
     const owned = it ? hasEvo(it, evo) : false;
-    // A base PlayStyle is redundant when the player already has — or has selected —
-    // the + version of the same playstyle (same rewardId). Block it so you can't
-    // "downgrade" or double up; the + already covers it.
     let plusBlocked = false;
     if (it && evo.kind === "PS") {
       let plusOwned = false; try { plusOwned = !!it.hasPlusPlayStyle(evoTrait(evo)); } catch (_) {}
       const plusSel = [...state.selected].some((s) => { const e = byId(s); return e && e.kind === "PS+" && e.r === evo.r; });
       plusBlocked = plusOwned || plusSel;
     }
-    // GK-exclusive evos (g=1) need a GK; "any player" evos (g=0) are open to all (incl. GKs)
     const wrongScope = it ? (!!evo.g && !gkPlayer) : false;
-    const dis = wrongScope || owned || !!evo.disGH || plusBlocked; // owned -> would 460; disGH -> not applicable yet
+    const dis = wrongScope || owned || !!evo.disGH || plusBlocked;
+    const isSuggested = state.suggestedSlots && state.suggestedSlots.has(evo.s);
     const sel = state.selected.has(evo.s);
     const card = document.createElement("div");
-    card.className = "ec" + (evo.kind === "PS+" ? " psp" : "") + (sel ? " sel" : "") + (owned ? " owned" : "") + (dis ? " dis" : "");
+    card.className = "ec" + (evo.kind === "PS+" ? " psp" : "") + (sel ? " sel" : "") + (isSuggested ? " sug-pick" : "") + (owned ? " owned" : "") + (dis ? " dis" : "");
     const nm = dispName(baseName(evo));
     const tipTitle = nm + (evo.kind === "PS+" ? " +" : "")
+      + (isSuggested ? " · ✨ Recommended for role" : "")
       + (wrongScope ? " · goalkeepers only" : "") + (owned ? " · already owned" : "")
       + (plusBlocked && !owned ? " · + version already applied/selected" : "")
-      + (evo.disGH && !owned ? " · needs 3 PS+ first (or none left)" : "");
+      + (evo.disGH && !owned ? " · needs 3 PS+ first" : "");
     card.setAttribute("data-tip", tipTitle + "|" + psDesc(baseName(evo)));
     card.innerHTML = `<div class="ico" data-ini="${esc(initials(nm))}"><i class="${iconClass(evo.kind === "PS+", evoTrait(evo))}"></i></div>` +
-      `<div class="nm">${esc(nm)}</div>${owned ? '<span class="own" aria-label="owned"></span>' : ""}`;
+      `<div class="nm">${esc(nm)}</div>` +
+      (isSuggested && !owned ? '<span class="sug-badge" title="Recommended for role">✨</span>' : '') +
+      (owned ? '<span class="own" aria-label="owned"></span>' : "");
     if (!dis) card.addEventListener("click", () => toggleEvo(evo, card));
     return card;
   }
+  function hidePsMatches() {
+    if (els.psmatches) {
+      els.psmatches.style.display = "none";
+      els.psmatches.innerHTML = "";
+    }
+  }
+
+  let draggedSlotId = null;
+  let draggedSource = "main"; // "main" | "reserve"
+
+  function renderReserveStrip() {
+    const wrap = els.reservewrap || document.getElementById("fcevo-reserve-wrap");
+    const box = els.reservestrip || document.getElementById("fcevo-reservestrip");
+    const countEl = els.reservecount || document.getElementById("fcevo-reserve-count");
+    if (!box) return;
+
+    state.reserveOrder = (state.reserveOrder || []).filter((s) => state.selected.has(s));
+
+    if (!state.reserveOrder.length) {
+      if (wrap) wrap.style.display = "none";
+      box.style.display = "none";
+      box.innerHTML = "";
+      return;
+    }
+
+    if (wrap) wrap.style.display = "block";
+    box.style.display = "flex";
+    if (countEl) countEl.textContent = String(state.reserveOrder.length);
+    box.innerHTML = "";
+
+    // Reserve drop zone (accepts items dragged from main sequence)
+    box.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      try { e.dataTransfer.dropEffect = "move"; } catch (_) {}
+      box.classList.add("drag-over");
+    });
+    box.addEventListener("dragleave", () => {
+      box.classList.remove("drag-over");
+    });
+    box.addEventListener("drop", (e) => {
+      e.preventDefault();
+      box.classList.remove("drag-over");
+      if (draggedSlotId == null || draggedSource !== "main") return;
+      const sid = draggedSlotId;
+      state.selectedOrder = state.selectedOrder.filter((s) => s !== sid);
+      if (!state.reserveOrder.includes(sid)) state.reserveOrder.push(sid);
+      state.cursorIndex = Math.min(state.cursorIndex || 0, state.selectedOrder.length);
+      renderSelectedStrip();
+      renderReserveStrip();
+      updateCount();
+    });
+
+    state.reserveOrder.forEach((sid) => {
+      const evo = byId(sid);
+      if (!evo) return;
+      const isPlus = evo.kind === "PS+";
+      const nm = dispName(baseName(evo));
+
+      const chip = document.createElement("div");
+      chip.className = `reserve-chip ${isPlus ? "psp" : ""}`;
+      chip.draggable = true;
+      chip.dataset.slotid = sid;
+      chip.setAttribute("title", `Reserved: ${nm}${isPlus ? "+" : ""} (Drag to active sequence or click ⬆ Main)`);
+
+      chip.innerHTML = `
+        <span class="drag-grip">⠿</span>
+        <span>${esc(nm)}${isPlus ? "+" : ""}</span>
+        <button class="chip-rest" data-act="to-main" title="Restore to main sequence at cursor">⬆ Main</button>
+        <button class="chip-x" data-act="rm-reserve" title="Remove ${esc(nm)}">✕</button>
+      `;
+
+      chip.addEventListener("dragstart", (e) => {
+        draggedSlotId = sid;
+        draggedSource = "reserve";
+        chip.classList.add("dragging");
+        try {
+          e.dataTransfer.effectAllowed = "move";
+          e.dataTransfer.setData("text/plain", String(sid));
+        } catch (_) {}
+      });
+
+      chip.addEventListener("dragend", () => {
+        draggedSlotId = null;
+        chip.classList.remove("dragging");
+      });
+
+      chip.addEventListener("click", (e) => {
+        const act = e.target.getAttribute("data-act");
+        if (act === "to-main") {
+          e.stopPropagation();
+          state.reserveOrder = state.reserveOrder.filter((s) => s !== sid);
+          const cidx = Math.max(0, Math.min(state.cursorIndex || 0, state.selectedOrder.length));
+          state.selectedOrder.splice(cidx, 0, sid);
+          state.cursorIndex = cidx + 1;
+          renderSelectedStrip();
+          renderReserveStrip();
+          updateCount();
+        } else if (act === "rm-reserve") {
+          e.stopPropagation();
+          state.selected.delete(sid);
+          state.reserveOrder = state.reserveOrder.filter((s) => s !== sid);
+          renderSelectedStrip();
+          renderReserveStrip();
+          renderGrid();
+          updateCount();
+          updateRunBtn();
+        }
+      });
+
+      box.appendChild(chip);
+    });
+  }
+
+  function renderSelectedStrip() {
+    const wrap = els.selstripwrap || document.getElementById("fcevo-selstrip-wrap");
+    const box = els.selstrip || document.getElementById("fcevo-selstrip");
+    const countEl = els.selcount || document.getElementById("fcevo-sel-count");
+    const badgeEl = els.cursorbadge || document.getElementById("fcevo-cursor-badge");
+    const mvBtn = els.mvafterbtn || document.getElementById("fcevo-mvafterbtn");
+    if (!box) return;
+
+    // Sync selectedOrder & reserveOrder with selected Set
+    state.selectedOrder = (state.selectedOrder || []).filter((s) => state.selected.has(s) && !(state.reserveOrder || []).includes(s));
+    state.reserveOrder = (state.reserveOrder || []).filter((s) => state.selected.has(s));
+
+    // Any items in selected Set not in selectedOrder or reserveOrder go to selectedOrder
+    state.selected.forEach((s) => {
+      if (!state.selectedOrder.includes(s) && !state.reserveOrder.includes(s)) {
+        const cidx = Math.max(0, Math.min(state.cursorIndex || 0, state.selectedOrder.length));
+        state.selectedOrder.splice(cidx, 0, s);
+        state.cursorIndex = cidx + 1;
+      }
+    });
+
+    state.cursorIndex = Math.max(0, Math.min(state.cursorIndex || 0, state.selectedOrder.length));
+
+    if (!state.selectedOrder.length && !state.reserveOrder.length) {
+      if (wrap) wrap.style.display = "none";
+      box.style.display = "none";
+      box.innerHTML = "";
+      renderReserveStrip();
+      return;
+    }
+
+    if (wrap) wrap.style.display = "block";
+    box.style.display = "flex";
+    if (countEl) countEl.textContent = String(state.selectedOrder.length);
+    if (badgeEl) badgeEl.textContent = `📍 Cursor: #${state.cursorIndex}`;
+
+    if (mvBtn) {
+      const restCount = state.selectedOrder.length - state.cursorIndex;
+      if (restCount > 0) {
+        mvBtn.style.display = "";
+        mvBtn.textContent = `⬇ Move rest (${restCount}) to Reserve`;
+      } else {
+        mvBtn.style.display = "none";
+      }
+    }
+
+    box.innerHTML = "";
+    const total = state.selectedOrder.length;
+
+    for (let i = 0; i <= total; i++) {
+      // Render cursor spot before item i (or after last item when i === total)
+      const spot = document.createElement("div");
+      spot.className = `cursor-spot ${i === state.cursorIndex ? "active" : ""}`;
+      spot.dataset.cidx = i;
+      spot.setAttribute("title", `Click to place cursor here (Position #${i})`);
+      spot.innerHTML = `<div class="cursor-line"></div>`;
+
+      spot.addEventListener("click", (e) => {
+        e.stopPropagation();
+        state.cursorIndex = i;
+        renderSelectedStrip();
+      });
+
+      spot.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        try { e.dataTransfer.dropEffect = "move"; } catch (_) {}
+        spot.classList.add("drag-over");
+      });
+
+      spot.addEventListener("dragleave", () => {
+        spot.classList.remove("drag-over");
+      });
+
+      spot.addEventListener("drop", (e) => {
+        e.preventDefault();
+        spot.classList.remove("drag-over");
+        if (draggedSlotId == null) return;
+        const sid = draggedSlotId;
+
+        if (draggedSource === "reserve") {
+          state.reserveOrder = state.reserveOrder.filter((s) => s !== sid);
+          state.selectedOrder.splice(i, 0, sid);
+          state.cursorIndex = i + 1;
+        } else {
+          const fromIdx = state.selectedOrder.indexOf(sid);
+          if (fromIdx !== -1) {
+            state.selectedOrder.splice(fromIdx, 1);
+            const insertIdx = i > fromIdx ? i - 1 : i;
+            state.selectedOrder.splice(insertIdx, 0, sid);
+            state.cursorIndex = insertIdx + 1;
+          }
+        }
+        renderSelectedStrip();
+        renderReserveStrip();
+        updateCount();
+      });
+
+      box.appendChild(spot);
+
+      // Render chip at index i if i < total
+      if (i < total) {
+        const sid = state.selectedOrder[i];
+        const evo = byId(sid);
+        if (!evo) continue;
+        const isPlus = evo.kind === "PS+";
+        const nm = dispName(baseName(evo));
+
+        const chip = document.createElement("div");
+        chip.className = `sel-chip ${isPlus ? "psp" : ""}`;
+        chip.draggable = true;
+        chip.dataset.slotid = sid;
+        chip.dataset.index = i;
+        chip.setAttribute("title", `Step ${i + 1}: ${nm}${isPlus ? "+" : ""} (Drag to reorder or click ⬇ Reserve)`);
+
+        chip.innerHTML = `
+          <span class="drag-grip" title="Drag to reorder">⠿</span>
+          <span class="chip-num">${i + 1}</span>
+          <span>${esc(nm)}${isPlus ? "+" : ""}</span>
+          ${i > 0 ? `<button class="chip-arrow" data-act="mvleft" title="Move earlier">◀</button>` : ""}
+          ${i < total - 1 ? `<button class="chip-arrow" data-act="mvright" title="Move later">▶</button>` : ""}
+          <button class="chip-arrow" data-act="to-reserve" title="Move to Temporary Reserve">⬇</button>
+          <button class="chip-x" data-act="rmps" title="Remove ${esc(nm)}">✕</button>
+        `;
+
+        chip.addEventListener("dragstart", (e) => {
+          draggedSlotId = sid;
+          draggedSource = "main";
+          chip.classList.add("dragging");
+          try {
+            e.dataTransfer.effectAllowed = "move";
+            e.dataTransfer.setData("text/plain", String(sid));
+          } catch (_) {}
+        });
+
+        chip.addEventListener("dragend", () => {
+          draggedSlotId = null;
+          chip.classList.remove("dragging");
+        });
+
+        chip.addEventListener("click", (e) => {
+          const act = e.target.getAttribute("data-act");
+          if (act === "rmps") {
+            e.stopPropagation();
+            state.selected.delete(sid);
+            state.selectedOrder = state.selectedOrder.filter((s) => s !== sid);
+            state.cursorIndex = Math.min(state.cursorIndex, state.selectedOrder.length);
+            renderSelectedStrip();
+            renderReserveStrip();
+            renderGrid();
+            updateCount();
+            updateRunBtn();
+          } else if (act === "to-reserve") {
+            e.stopPropagation();
+            state.selectedOrder = state.selectedOrder.filter((s) => s !== sid);
+            if (!state.reserveOrder.includes(sid)) state.reserveOrder.push(sid);
+            state.cursorIndex = Math.min(state.cursorIndex, state.selectedOrder.length);
+            renderSelectedStrip();
+            renderReserveStrip();
+            updateCount();
+          } else if (act === "mvleft") {
+            e.stopPropagation();
+            if (i > 0) {
+              const temp = state.selectedOrder[i - 1];
+              state.selectedOrder[i - 1] = state.selectedOrder[i];
+              state.selectedOrder[i] = temp;
+              state.cursorIndex = i;
+              renderSelectedStrip();
+              updateCount();
+            }
+          } else if (act === "mvright") {
+            e.stopPropagation();
+            if (i < total - 1) {
+              const temp = state.selectedOrder[i + 1];
+              state.selectedOrder[i + 1] = state.selectedOrder[i];
+              state.selectedOrder[i] = temp;
+              state.cursorIndex = i + 2;
+              renderSelectedStrip();
+              updateCount();
+            }
+          } else {
+            // Clicking chip body positions cursor after this chip
+            state.cursorIndex = i + 1;
+            renderSelectedStrip();
+          }
+        });
+
+        box.appendChild(chip);
+      }
+    }
+
+    renderReserveStrip();
+  }
+
+  function onPsSearchInput(e) {
+    const q = e.target.value.trim().toLowerCase();
+    state.psSearchQ = q;
+    renderGrid();
+    if (!q) {
+      hidePsMatches();
+      return;
+    }
+    const box = els.psmatches;
+    if (!box) return;
+    const it = state.item;
+    const isGK = it ? (() => { try { return it.isGK(); } catch (_) { return false; } })() : false;
+    
+    const candidates = Array.isArray(ALL) ? ALL : [];
+    const matches = candidates.filter((evo) => {
+      if (evo.g && !isGK) return false;
+      const nm = dispName(baseName(evo)).toLowerCase();
+      const bnm = baseName(evo).toLowerCase();
+      return nm.includes(q) || bnm.includes(q);
+    });
+
+    if (!matches.length) {
+      box.innerHTML = `<div class="rhint">No playstyle matches &ldquo;${esc(q)}&rdquo;</div>`;
+      box.style.display = "block";
+      return;
+    }
+
+    box.innerHTML = matches.slice(0, 8).map((evo) => {
+      const nm = dispName(baseName(evo));
+      const isPlus = evo.kind === "PS+";
+      const isSel = state.selected.has(evo.s);
+      return `<div class="ps-quick-item ${isPlus ? "psp" : ""} ${isSel ? "sel" : ""}" data-qsid="${evo.s}">` +
+        `<span class="qbadge">${isPlus ? "PS+" : "PS"}</span>` +
+        `<span>${esc(nm)}</span>` +
+        (isSel ? '<span style="margin-left:auto;font-size:10px;color:var(--good)">✓ Selected</span>' : '') +
+        `</div>`;
+    }).join("");
+    box.style.display = "block";
+
+    box.querySelectorAll(".ps-quick-item").forEach((el) => {
+      el.addEventListener("click", () => {
+        const sid = Number(el.dataset.qsid);
+        const evo = byId(sid);
+        if (evo) {
+          if (!state.selected.has(evo.s)) {
+            if (checkCap(evo)) {
+              if (Array.isArray(ALL)) {
+                const cp = ALL.find((x) => x && x.r === evo.r && x.kind !== evo.kind);
+                if (cp && state.selected.has(cp.s)) {
+                  state.selected.delete(cp.s);
+                  state.selectedOrder = state.selectedOrder.filter((s) => s !== cp.s);
+                }
+              }
+              state.selected.add(evo.s);
+              if (!state.selectedOrder.includes(evo.s)) state.selectedOrder.push(evo.s);
+              log(`✨ Selected ${dispName(baseName(evo))}${evo.kind === "PS+" ? "+" : ""}`, "head");
+            }
+          } else {
+            state.selected.delete(evo.s);
+            state.selectedOrder = state.selectedOrder.filter((s) => s !== evo.s);
+          }
+          if (els.pssearch) els.pssearch.value = "";
+          state.psSearchQ = "";
+          hidePsMatches();
+          renderSelectedStrip();
+          renderGrid();
+          updateCount();
+          updateRunBtn();
+        }
+      });
+    });
+  }
+
+  function onPsSearchKeydown(e) {
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      if (els.pssearch) els.pssearch.value = "";
+      state.psSearchQ = "";
+      hidePsMatches();
+      renderGrid();
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const first = els.psmatches && els.psmatches.querySelector(".ps-quick-item");
+      if (first) {
+        first.click();
+      }
+    }
+  }
+
   function renderGrid() {
     const box = els.grid; box.innerHTML = "";
     const it = state.item;
     const gkPlayer = it ? (() => { try { return it.isGK(); } catch (_) { return false; } })() : null;
-    const list = current();
-    // Bucket by EA category, then render each non-empty category in game order.
-    const groups = {};
-    list.forEach((evo) => { const c = CAT_OF[baseName(evo)] || "Other"; (groups[c] || (groups[c] = [])).push(evo); });
-    CAT_ORDER.concat("Other").forEach((cat) => {
-      const evos = groups[cat];
-      if (!evos || !evos.length) return;
+    let list = current();
+    
+    // Filter by quick search if typed
+    if (state.psSearchQ) {
+      list = list.filter((evo) => {
+        const nm = dispName(baseName(evo)).toLowerCase();
+        const bnm = baseName(evo).toLowerCase();
+        return nm.includes(state.psSearchQ) || bnm.includes(state.psSearchQ);
+      });
+    }
+
+    if (!list.length) {
+      box.innerHTML = `<div class="rhint">No playstyles match &ldquo;${esc(state.psSearchQ)}&rdquo;</div>`;
+      renderSelectedStrip();
+      markGlyphs();
+      return;
+    }
+
+    if (state.sortOrder === "alpha") {
+      // Sort alphabetically A-Z
+      const sorted = list.slice().sort((a, b) => dispName(baseName(a)).localeCompare(dispName(baseName(b))));
       const sec = document.createElement("div");
-      sec.innerHTML = `<div class="gcat-h">${esc(cat)}</div>`;
+      sec.innerHTML = `<div class="gcat-h">Alphabetical (A–Z) · ${sorted.length}</div>`;
       const row = document.createElement("div"); row.className = "gcat-row";
-      evos.forEach((evo) => row.appendChild(evoCard(evo, it, gkPlayer)));
+      sorted.forEach((evo) => row.appendChild(evoCard(evo, it, gkPlayer)));
       sec.appendChild(row);
       box.appendChild(sec);
-    });
+    } else {
+      // Bucket by EA category, then render each non-empty category in game order.
+      const groups = {};
+      list.forEach((evo) => { const c = CAT_OF[baseName(evo)] || "Other"; (groups[c] || (groups[c] = [])).push(evo); });
+      CAT_ORDER.concat("Other").forEach((cat) => {
+        const evos = groups[cat];
+        if (!evos || !evos.length) return;
+        const sec = document.createElement("div");
+        sec.innerHTML = `<div class="gcat-h">${esc(cat)} (${evos.length})</div>`;
+        const row = document.createElement("div"); row.className = "gcat-row";
+        evos.forEach((evo) => row.appendChild(evoCard(evo, it, gkPlayer)));
+        sec.appendChild(row);
+        box.appendChild(sec);
+      });
+    }
+    renderSelectedStrip();
     markGlyphs();
   }
+
   // EA's icon font fills the diamonds/hexagons on the live app. If a glyph isn't
   // rendering (font not yet loaded, or a genuinely blank glyph), fall back to the
   // playstyle's initials so a shape is never empty. Toggles both ways so it self-
@@ -2865,15 +3121,20 @@ function bindQueueEvents() {
           const cp = ALL.find((x) => x && x.r === evo.r && x.kind !== evo.kind);
           if (cp && state.selected.has(cp.s)) {
             state.selected.delete(cp.s);
+            state.selectedOrder = state.selectedOrder.filter((s) => s !== cp.s);
             log("↔ Replaced " + (cp.n || "") + " with " + (evo.n || "") + " (same PlayStyle).", "dim");
           }
         }
         state.selected.add(evo.s);
+        if (!state.selectedOrder.includes(evo.s)) state.selectedOrder.push(evo.s);
       } else {
         state.selected.delete(evo.s);
+        state.selectedOrder = state.selectedOrder.filter((s) => s !== evo.s);
       }
       if (card && card.classList) card.classList.toggle("sel", on);
+      renderSelectedStrip();
       updateCount();
+      updateRunBtn();
     } catch (_) {}
   }
 
@@ -2931,6 +3192,7 @@ function bindQueueEvents() {
           els.count.classList.toggle("over", !!over);
         }
       }
+      renderSelectedStrip();
     } catch (_) {}
   }
 
@@ -2940,7 +3202,7 @@ function bindQueueEvents() {
       if (els.run) els.run.disabled = on;
       if (els.stop) els.stop.style.display = on ? "" : "none";
       if (els.run) els.run.style.display = on ? "none" : "";
-      if (els.clearsel) els.clearsel.style.display = (on || state.mode !== "auto") ? "none" : "";
+      if (els.clearsel) els.clearsel.style.display = on ? "none" : (state.selected.size ? "" : "none");
     } catch (_) {}
   }
 
@@ -2957,7 +3219,6 @@ function bindQueueEvents() {
     } catch (_) {}
     (cls === "err" ? console.error : cls === "warn" ? console.warn : console.log)("[FCEvo]", msg);
   }
-  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const initials = (n) => n.replace(/\+$/, "").split(/\s+/).map((w) => w[0]).join("").slice(0, 3).toUpperCase();
 
   function makeDraggable(el, handle) {
@@ -3053,7 +3314,7 @@ function bindQueueEvents() {
       booted = true;
       clearInterval(iv);
       if (!document.getElementById("fcevo")) build();
-      window.FCEvo = { applyEvo, claimEvo, removeEvoUpgrade, removeLastEvo, canRemoveEvo, runBatch, runDispatch, state, PS, PSP, RARITIES, clubPlayers, selectPlayer, scrapeRarities, clubRaritiesDump, eligibleRarities, loadClub, startClubLoad, readAttrs, dumpEntity, openEntity, freshItemById, reloadAndReselect, setMode, autoResolveRole, suggestedSlots, toggleQueue, clearQueue, requestRun };
+      window.FCEvo = { applyEvo, claimEvo, removeEvoUpgrade, removeLastEvo, canRemoveEvo, runBatch, runDispatch, state, PS, PSP, RARITIES, clubPlayers, selectPlayer, scrapeRarities, clubRaritiesDump, eligibleRarities, loadClub, startClubLoad, readAttrs, dumpEntity, openEntity, freshItemById, reloadAndReselect, autoResolveRole, suggestedSlots, suggest, requestRun };
       
       setClubStatus("Club: waiting for squad…", "load");
       let waited = 0;

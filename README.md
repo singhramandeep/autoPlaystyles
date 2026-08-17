@@ -36,14 +36,16 @@
 
 This Chrome Extension injects a **floating control panel** into the EA FC 26 web app that lets you:
 
-
-- 🎯 **Select any player** from your club by name search or rarity filter
-- ✨ **Auto-suggest** the best PlayStyles for a chosen position + role (e.g. ST → Advanced Forward)
+- 🎯 **Select any player** from your club with instant search, tradeable/untradeable filters, and rarity filters (moved neatly below the search field)
+- ✨ **Smart Auto-Suggest & Auto-Select** — instantly suggests and selects recommended PlayStyles (PS+ and basic) when you select a player, position, and role
+- 🔍 **Type-to-Search & Quick-Select** — type the first few letters of any PlayStyle to find and auto-select matches, with one-click `✕` cross removal chips
+- 🔤 **Alphabetical (A–Z) & Category Sorting** — switch between Category groupings and Alphabetical A-Z listing for both PlayStyle and PlayStyle+
+- 🎨 **Compact 25% Smaller Icons** — sleek, high-density icon grid that prevents cramped rows and removes awkward horizontal scrolling
 - ✅ **Batch-apply** multiple PlayStyle / PlayStyle+ evolutions in one click
-- 🔄 **Bulk mode** — queue multiple players and evolve them all in sequence
 - ↩️ **Remove evolutions** — undo the last applied evo from a player
 - 🌟 **FUTTIES & Glory Hunters support** — search FUTTIES cards and apply up to 4 PS+ (rarities 70, 78, 104, 109, 128, 140–146, 169, 171–173)
-- 📊 **Live cap tracking** — shows used / remaining slots before you apply
+- 📊 **Live cap & attribute tracking** — inspect detailed player sub-attributes and track live PS+/Basic caps
+- 📐 **Expanded & Resizable Panel** — increased panel width with smooth horizontal resizing and backdrop blur
 
 ---
 
@@ -51,7 +53,7 @@ This Chrome Extension injects a **floating control panel** into the EA FC 26 web
 
 ### The Core Script (`apply.js`)
 
-`apply.js` is the original Tampermonkey userscript by [nezygis](https://github.com/nezygis/fc26-playstyle-evo-helper). It drives EA's **own internal service objects** rather than making raw HTTP calls, keeping the game's state machine consistent:
+`apply.js` is the userscript driving EA's **own internal service objects** rather than making raw HTTP calls, keeping the game's state machine consistent:
 
 | EA Service Call | What It Does |
 |---|---|
@@ -64,7 +66,7 @@ This Chrome Extension injects a **floating control panel** into the EA FC 26 web
 
 Chrome content scripts normally run in an **isolated JavaScript world** and cannot access the EA web app's internal objects (`window.services`, `window.repositories`, etc.).
 
-The extension solves this by declaring `"world": "MAIN"` in the manifest, which injects `apply.js` directly into the **page's own JS context** — exactly the same environment that Tampermonkey uses. No modifications to `apply.js` are needed.
+The extension solves this by declaring `"world": "MAIN"` in the manifest, which injects `apply.js` directly into the **page's own JS context** — exactly the same environment that Tampermonkey uses.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -87,30 +89,8 @@ The extension solves this by declaring `"world": "MAIN"` in the manifest, which 
          ▼
 ┌─────────────────────────────┐
 │  background.js (SW)         │  Updates badge per tab
-│  popup.html / popup.js      │  Shows live status
+│  popup.html / popup.js      │  Shows live status & wider HUD
 └─────────────────────────────┘
-```
-
----
-
-## File Structure
-
-```
-autoplaystyles/
-│
-├── apply.js              ← Core logic — NEVER modify this manually.
-│                           Drop in a new version to update.
-│
-├── manifest.json         ← Chrome Extension manifest (v3)
-├── status.js             ← Health monitor (isolated world content script)
-├── background.js         ← Service worker: badge + status cache per tab
-├── popup.html            ← Extension popup UI
-├── popup.js              ← Popup logic: health check & status rendering
-│
-└── icons/
-    ├── icon16.png        ← 16×16  toolbar icon
-    ├── icon48.png        ← 48×48  extensions page icon
-    └── icon128.png       ← 128×128 Chrome Web Store / about icon
 ```
 
 ---
@@ -175,31 +155,25 @@ Click the 🧩 puzzle-piece icon in Chrome's top-right corner → find **PlaySty
 
 Navigate to: **https://www.ea.com/ultimate-team/web-app**
 
-Log in, then go to the **Evolutions → Academy** hub. The floating **Evo Helper** panel will appear automatically in the bottom-right area of the page.
+Log in, then go to the **Evolutions → Academy** hub. The floating **Evo Helper** panel will appear automatically.
 
 ---
 
-### Single Mode (one player)
+### Step-by-Step Workflow
 
-1. **Search** for a player by name in the panel's search box, or browse the list
-2. Filter by rarity using **Rarity ▾** (defaults to evo-eligible rarities)
-3. **Click the player** to select them
-4. Pick a **Position** and **Role** from the dropdowns
-5. Click **✨ Suggest** — the panel pre-selects the recommended PlayStyles:
-   - Top 3 from the role's priority list → **PlayStyle+**
-   - The rest → **basic PlayStyle**
-6. Tweak the selection by clicking tiles in the grid (PS+ tab / PS tab)
-7. Click **Apply selected evolutions**
-
----
-
-### Bulk Mode (multiple players)
-
-1. Switch to the **Bulk** tab at the top of the panel
-2. **Click players** in the list to add them to the queue — each player is auto-assigned a role based on their primary position
-3. Adjust each queued player's **Position** and **Role** in the queue panel
-4. Click **Evolve selected players** → confirm on the second click
-5. The tool processes each player in sequence with a configurable delay
+1. **Select Player from Club**:
+   - Search by name, or filter by **Rarity ▾**, **Trade ▾** (tradeable/untradeable), or **PS ▾** (clean vs existing PS cards).
+   - Click the player in the list.
+2. **Auto-Suggestions for Position & Role**:
+   - The player's position and best tactical role are resolved and selected.
+   - Recommended PlayStyles are **automatically calculated and selected** (top 3/4 as PlayStyle+, remaining as Basic PlayStyle).
+   - Recommended items show a glowing border and `✨` badge.
+3. **Customize & Tweak**:
+   - Change Position or Role anytime from the dropdowns to instantly re-calculate suggestions.
+   - Click any PlayStyle or PlayStyle+ tile to toggle selection on/off.
+   - Switch between **PlayStyle+**, **PlayStyle**, and **4th PS+** tabs.
+4. **Apply Selected Evolutions**:
+   - Click **Apply Selected Evolutions** to execute all chosen upgrades in sequence.
 
 ---
 
@@ -210,47 +184,6 @@ Log in, then go to the **Evolutions → Academy** hub. The floating **Evo Helper
 | **Claim & finish** | ✅ On | Claims each slot after applying (locks the evo in) |
 | **Delay** | 300 ms | Gap between applying each evo (jittered ±35% automatically) |
 | **Start minimized** | Off | Panel boots collapsed on every page load |
-
----
-
-## Updating the Core Script
-
-The wrapper is designed so you **never need to touch it** when the core logic changes.
-
-1. Get the new version of `apply.js` (or `fc26-playstyle-evo-helper.user.js` renamed to `apply.js`)
-2. Drop it into `C:\Users\RamandeepSingh\workspaces\autoplaystyles\`, overwriting the old file
-3. Go to `chrome://extensions`
-4. Click the **⟳ reload** icon on the **PlayStyle Evo Helper** card
-
-That's all. No other files need to change.
-
----
-
-## Status & Health Check
-
-Click the extension icon in your Chrome toolbar to open the **status popup**.
-
-### Badge colours
-
-| Badge | Meaning |
-|---|---|
-| 🟢 `✓` | Evo Helper panel is live and active on the current tab |
-| 🟡 `…` | On the EA web app but the panel hasn't appeared yet |
-| *(no badge)* | Current tab is not the EA web app |
-
-### Popup states
-
-| State | Meaning |
-|---|---|
-| **Evo Helper is ACTIVE** | `#fcevo` panel found in the page DOM — fully working |
-| **Waiting for panel…** | On the EA web app, but the Academy hub isn't open yet |
-| **Not on EA Web App** | You're on a different tab/page |
-
-The popup also shows:
-- Whether the page is the EA web app
-- Whether `apply.js` is loaded
-- How recently the status was last reported
-- A **⟳ Refresh** button to re-query immediately
 
 ---
 
@@ -266,16 +199,6 @@ These are enforced by `apply.js` and match EA's in-game rules:
 | GK-only PlayStyles (`Far Reach`, `Footwork`, etc.) | Only applicable to Goalkeepers |
 
 The panel tracks your remaining slots in real time and turns **red** if a selection would exceed the cap.
-
----
-
-## Modes
-
-### 🎯 Single Mode
-Manual control. You pick the player, pick the evos, hit apply. Best for careful one-off upgrades.
-
-### ⚡ Bulk / Auto Mode
-Queue multiple players with auto-resolved roles. The tool applies evos to each in sequence. Ideal for evolving an entire squad in one session.
 
 ---
 

@@ -36,6 +36,8 @@
 (function () {
   "use strict";
 
+  const safe = (fn) => { try { return fn(); } catch (_) { return null; } };
+
   const CAP_PLUS = 4, CAP_BASIC = 8, TRAIT_OFFSET = 301; // traitId = rewardId - 301 (icon classes run 0..35)
   const SETTLE_MS = 700; // wait after an apply/remove for the server to commit before re-fetching (else stale card)
   const REPO_URL = "https://github.com/nezygis/fc26-playstyle-evo-helper";
@@ -204,6 +206,9 @@
     mode: "single", // "single" (manual, one player) | "auto" (bulk auto-resolve)
     item: null, // selected club item entity
     selected: new Set(), // slotIds
+    selectedOrder: [], // ordered slotIds for exact application sequence
+    reserveOrder: [], // slotIds in temporary reserve area
+    cursorIndex: 0, // insertion cursor index in selectedOrder
     queue: [], // auto-mode: [{ item, role:{pos,role}, slots:[slotIds] }] — click a player to add
     running: false, abort: false,
     rarities: new Set(), // allowed rareflags for club search; empty = all
@@ -1782,7 +1787,6 @@
   const FOOT = { 1: "Right", 2: "Left" };
   const WORK_RATE = { 1: "Low", 2: "Med", 3: "High" };
   const BODY_TYPE = { 0: "Unique", 1: "Lean", 2: "Average", 3: "Stocky", 4: "High & Lean", 5: "High & Avg", 6: "High & Stocky" };
-  const safe = (fn) => { try { return fn(); } catch (_) { return null; } };
   function calcAge(dob) {
     if (!dob) return null;
     try {
